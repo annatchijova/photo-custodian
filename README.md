@@ -12,8 +12,21 @@ collections, identifying duplicate candidates, and moving reviewed files through
 a reversible quarantine workflow. Detection and deletion are intentionally
 separate operations.
 
-> Project status: architecture and safety contract. No scanner or deletion
-> command has been implemented yet.
+> Project status: M0 inventory is implemented. The CLI performs read-only,
+> incremental scans into a versioned SQLite catalog. Duplicate detection and all
+> filesystem mutation commands remain unimplemented.
+
+## Run the implemented inventory
+
+```bash
+uv sync --locked
+uv run photo-custodian scan ~/Pictures /mnt/archive
+uv run photo-custodian inventory
+```
+
+The default catalog is stored under the user's XDG data directory. Override it
+with `--catalog /path/to/catalog.sqlite3` or `PHOTO_CUSTODIAN_CATALOG`. Scanning
+reads source metadata and writes only to the catalog.
 
 ## The intended experience
 

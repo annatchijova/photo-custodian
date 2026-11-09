@@ -2,8 +2,9 @@
 
 # Photo Custodian: Technical Design
 
-This document records the proposed architecture and engineering constraints for
-Photo Custodian. It is a design baseline, not evidence of an implementation.
+This document records the architecture and engineering constraints for Photo
+Custodian. The M0 read-only inventory is implemented; duplicate detection,
+quarantine, similarity analysis, and model integration remain design proposals.
 
 ## System boundary
 
@@ -220,8 +221,10 @@ The implementation must provide evidence for the property it claims:
   thresholds;
 - an end-to-end test proving that swapping the optional model changes only prose.
 
-No benchmark or test evidence exists yet. README claims must remain scoped to the
-design until these artifacts are produced.
+M0 has behavioral tests for schema stamping, boundary rejection, symlink
+skipping, incremental fingerprints, missing-file state, inventory aggregation,
+and CLI error handling. No representative one-terabyte benchmark or evidence for
+later milestones exists yet; claims about those capabilities remain design-only.
 
 ## Dependency and operational constraints
 

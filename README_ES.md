@@ -12,8 +12,22 @@ diseño, que inventariará esas colecciones, identificará candidatos duplicados
 moverá archivos revisados mediante una cuarentena reversible. La detección y el
 borrado son operaciones deliberadamente separadas.
 
-> Estado del proyecto: arquitectura y contrato de seguridad. Todavía no existe
-> un escáner ni un comando de borrado implementado.
+> Estado del proyecto: el inventario M0 está implementado. La CLI realiza
+> escaneos incrementales de solo lectura en un catálogo SQLite versionado. La
+> detección de duplicados y toda mutación del filesystem siguen sin implementar.
+
+## Ejecutar el inventario implementado
+
+```bash
+uv sync --locked
+uv run photo-custodian scan ~/Pictures /mnt/archive
+uv run photo-custodian inventory
+```
+
+El catálogo predeterminado se guarda en el directorio de datos XDG del usuario.
+Puede cambiarse con `--catalog /ruta/al/catalog.sqlite3` o con
+`PHOTO_CUSTODIAN_CATALOG`. El escaneo lee metadatos de las fuentes y escribe
+solamente en el catálogo.
 
 ## La experiencia propuesta
 
