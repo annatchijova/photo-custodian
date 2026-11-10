@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-CATALOG_SCHEMA_VERSION = 1
+CATALOG_SCHEMA_VERSION = 2
 
 
 SCHEMA_V1 = """
@@ -70,6 +70,26 @@ CREATE TABLE scan_errors (
 """
 
 
+FILE_HASHES_TABLE_V2 = """
+CREATE TABLE file_hashes (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    algorithm TEXT NOT NULL CHECK (algorithm = 'sha256'),
+    digest BLOB NOT NULL CHECK (length(digest) = 32),
+    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+    mtime_ns INTEGER NOT NULL,
+    ctime_ns INTEGER NOT NULL,
+    device INTEGER NOT NULL,
+    inode INTEGER NOT NULL,
+    computed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (file_id, algorithm)
+)
+"""
+
+FILE_HASHES_INDEX_V2 = """
+CREATE INDEX file_hashes_digest_idx ON file_hashes(algorithm, digest)
+"""
+
+
 class Catalog:
     """Versioned SQLite catalog for read-only source inventory."""
 
@@ -80,6 +100,7 @@ class Catalog:
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.execute("PRAGMA busy_timeout = 5000")
+        self.connection.execute("PRAGMA journal_mode = WAL")
         self._initialize_or_migrate()
 
     def __enter__(self) -> Catalog:
@@ -116,6 +137,8 @@ class Catalog:
                 )
             with self.connection:
                 self.connection.executescript(SCHEMA_V1)
+                self.connection.execute(FILE_HASHES_TABLE_V2)
+                self.connection.execute(FILE_HASHES_INDEX_V2)
                 self.connection.execute(
                     "INSERT INTO schema_metadata(singleton, schema_version) VALUES (1, ?)",
                     (CATALOG_SCHEMA_VERSION,),
@@ -130,12 +153,31 @@ class Catalog:
             self.connection.close()
             raise RuntimeError("catalog schema version metadata is missing or inconsistent")
 
-        if stored_version < CATALOG_SCHEMA_VERSION:
+        while stored_version < CATALOG_SCHEMA_VERSION:
+            if stored_version == 1:
+                self._migrate_v1_to_v2()
+                stored_version = 2
+                continue
             self.connection.close()
             raise RuntimeError(
                 f"catalog schema version {stored_version} requires a migration that is "
                 "not implemented"
             )
+
+    def _migrate_v1_to_v2(self) -> None:
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            self.connection.execute(FILE_HASHES_TABLE_V2)
+            self.connection.execute(FILE_HASHES_INDEX_V2)
+            self.connection.execute(
+                "UPDATE schema_metadata SET schema_version = 2 WHERE singleton = 1"
+            )
+            self.connection.execute("PRAGMA user_version = 2")
+        except Exception:
+            self.connection.rollback()
+            raise
+        else:
+            self.connection.commit()
 
     def ensure_source(self, root: Path) -> int:
         root_bytes = os.fsencode(root)

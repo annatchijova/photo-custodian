@@ -12,16 +12,17 @@ collections, identifying duplicate candidates, and moving reviewed files through
 a reversible quarantine workflow. Detection and deletion are intentionally
 separate operations.
 
-> Project status: M0 inventory is implemented. The CLI performs read-only,
-> incremental scans into a versioned SQLite catalog. Duplicate detection and all
-> filesystem mutation commands remain unimplemented.
+> Project status: M1 exact duplicate detection is implemented. The CLI performs
+> incremental inventory and complete SHA-256 verification of same-size candidates.
+> Visual similarity and all filesystem mutation commands remain unimplemented.
 
-## Run the implemented inventory
+## Run inventory and exact duplicate detection
 
 ```bash
 uv sync --locked
 uv run photo-custodian scan ~/Pictures /mnt/archive
 uv run photo-custodian inventory
+uv run photo-custodian duplicates exact
 ```
 
 The default catalog is stored under the user's XDG data directory. Override it

@@ -51,7 +51,7 @@ outside the first release.
 - Runtime network access is not required.
 - The initial runtime uses only the Python standard library.
 - Catalog schema changes are explicit, versioned migrations.
-- Filesystem mutations are absent from M0.
+- Filesystem mutations are absent from M0 and M1.
 
 ## Evidence required for M0
 
@@ -62,9 +62,12 @@ outside the first release.
   fail.
 - A manual smoke scan against a disposable fixture directory.
 
-## Later milestone gates
+## Delivery status and later milestone gates
 
-Exact duplicate detection cannot ship until complete-file hashing and traversal
-order invariance are tested. Quarantine cannot ship until restore is exercised
-on same-filesystem and cross-filesystem fixtures. Similarity cannot ship with a
-default threshold until evaluated against a labeled local corpus.
+M0 inventory and M1 exact duplicate detection are implemented. M1 uses complete
+SHA-256 over size-collision candidates and has traversal-order, hardlink, cache,
+stale-file, and schema-migration tests.
+
+Quarantine cannot ship until restore is exercised on same-filesystem and
+cross-filesystem fixtures. Similarity cannot ship with a default threshold until
+evaluated against a labeled local corpus.

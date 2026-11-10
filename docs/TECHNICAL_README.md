@@ -3,8 +3,9 @@
 # Photo Custodian: Technical Design
 
 This document records the architecture and engineering constraints for Photo
-Custodian. The M0 read-only inventory is implemented; duplicate detection,
-quarantine, similarity analysis, and model integration remain design proposals.
+Custodian. M0 read-only inventory and M1 exact duplicate detection are
+implemented; quarantine, similarity analysis, and model integration remain design
+proposals.
 
 ## System boundary
 
@@ -223,8 +224,10 @@ The implementation must provide evidence for the property it claims:
 
 M0 has behavioral tests for schema stamping, boundary rejection, symlink
 skipping, incremental fingerprints, missing-file state, inventory aggregation,
-and CLI error handling. No representative one-terabyte benchmark or evidence for
-later milestones exists yet; claims about those capabilities remain design-only.
+and CLI error handling. M1 adds migration, complete SHA-256, hardlink, stale-file,
+cache, traversal-order, bounded-output, and CLI tests. No representative
+one-terabyte benchmark or evidence for later milestones exists yet; claims about
+those capabilities remain design-only.
 
 ## Dependency and operational constraints
 

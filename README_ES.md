@@ -12,16 +12,17 @@ diseño, que inventariará esas colecciones, identificará candidatos duplicados
 moverá archivos revisados mediante una cuarentena reversible. La detección y el
 borrado son operaciones deliberadamente separadas.
 
-> Estado del proyecto: el inventario M0 está implementado. La CLI realiza
-> escaneos incrementales de solo lectura en un catálogo SQLite versionado. La
-> detección de duplicados y toda mutación del filesystem siguen sin implementar.
+> Estado del proyecto: la detección de duplicados exactos M1 está implementada.
+> La CLI inventaría incrementalmente y verifica candidatos del mismo tamaño con
+> SHA-256 completo. La similitud visual y las mutaciones siguen sin implementar.
 
-## Ejecutar el inventario implementado
+## Ejecutar inventario y duplicados exactos
 
 ```bash
 uv sync --locked
 uv run photo-custodian scan ~/Pictures /mnt/archive
 uv run photo-custodian inventory
+uv run photo-custodian duplicates exact
 ```
 
 El catálogo predeterminado se guarda en el directorio de datos XDG del usuario.

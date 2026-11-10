@@ -10,6 +10,7 @@ from typing import Sequence
 
 from . import __version__
 from .catalog import Catalog
+from .exact_duplicates import find_exact_duplicates
 from .scanner import scan_sources
 
 
@@ -39,6 +40,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     inventory_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
     inventory_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    duplicates_parser = subparsers.add_parser(
+        "duplicates", help="find review-only duplicate candidates"
+    )
+    duplicate_subparsers = duplicates_parser.add_subparsers(
+        dest="duplicate_kind", required=True
+    )
+    exact_parser = duplicate_subparsers.add_parser(
+        "exact", help="hash same-size files and report byte-identical groups"
+    )
+    exact_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
+    exact_parser.add_argument("--limit", type=int, default=100, dest="group_limit")
+    exact_parser.add_argument("--json", action="store_true", dest="as_json")
     return parser
 
 
@@ -73,6 +87,40 @@ def _print_inventory(rows: list[dict[str, int | str]], as_json: bool) -> None:
         print(f"{row['media_kind']}\t{row['file_count']}\t{row['total_bytes']}")
 
 
+def _terminal_safe(value: str) -> str:
+    return "".join(
+        character
+        if character.isprintable()
+        else character.encode("unicode_escape").decode("ascii")
+        for character in value
+    )
+
+
+def _print_exact_duplicates(report: dict[str, object], as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(report, sort_keys=True))
+        return
+    print(f"Status: {report['status']}")
+    print(f"Candidate files: {report['candidate_files']}")
+    print(f"Hashed / reused: {report['hashed_files']} / {report['reused_hashes']}")
+    print(f"Stale / errors: {report['stale_files']} / {report['error_count']}")
+    print(
+        f"Exact groups: {report['total_group_count']} "
+        f"(showing {report['returned_group_count']})"
+    )
+    for group in report["groups"]:
+        print(
+            f"\n{group['sha256']}  {group['size_bytes']} bytes  "
+            f"{group['file_count']} paths  "
+            f"{group['reclaimable_bytes']} potentially reclaimable bytes"
+        )
+        for item in group["files"]:
+            print(f"  {_terminal_safe(str(item['path']))}")
+        if group["files_truncated"]:
+            print(f"  ... {group['files_truncated']} additional paths not shown")
+    print("Source files modified: 0")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     arguments = parser.parse_args(argv)
@@ -85,6 +133,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if arguments.command == "inventory":
                 _print_inventory(catalog.inventory_summary(), arguments.as_json)
                 return 0
+            if arguments.command == "duplicates" and arguments.duplicate_kind == "exact":
+                report = find_exact_duplicates(
+                    catalog, group_limit=arguments.group_limit
+                )
+                _print_exact_duplicates(report.as_dict(), arguments.as_json)
+                return 0 if report.status == "complete" else 1
     except (OSError, RuntimeError, ValueError, sqlite3.Error) as error:
         print(f"photo-custodian: {error}", file=sys.stderr)
         return 2
