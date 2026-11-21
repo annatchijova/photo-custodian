@@ -12,6 +12,8 @@ versions, and generates an offline HTML report for reviewing groups. The report
 records choices for later verification. Reversible quarantine and file mutation
 commands are planned.
 
+The archive analysis workflow is implemented. End-to-end operation, hosted analysis and throughput on the 3 TB collection remain unverified.
+
 ## Run inventory and exact duplicate detection
 
 ```bash
@@ -121,32 +123,13 @@ tools. If the API fails, the CLI keeps the local next step visible and
 exits with a warning. Reviewing exact duplicates still hashes same-size
 candidates across the catalog. The display limit only bounds the groups shown.
 
-## The intended experience
+## What a review looks like
 
-```text
-$ photo-custodian scan ~/Pictures /mnt/archive
-Indexed: 184,212 files
-Exact duplicate groups: 4,318
-Visual similarity groups: 1,027
-Actions performed: 0
-
-$ photo-custodian review --group exact:0042
-KEEP       /mnt/archive/2019/IMG_0042.HEIC
-QUARANTINE /home/user/Pictures/import-3/IMG_0042.HEIC
-Reason: identical SHA-256; keeper policy requires explicit confirmation
-```
-
-The first command observes. The second prepares a reversible action. Neither
-example implies that visually similar files are safe to delete.
-
-| Common cleanup approach | Photo Custodian's intended behavior |
-|---|---|
-| Treat matching filenames as duplicates | Compare content independently of names |
-| Mix scanning and deletion | Separate inventory, review, quarantine, and purge |
-| Let a similarity score decide | Present visual similarity as a review candidate |
-| Rescan the entire library every time | Maintain an incremental local catalog |
-| Ask an AI model what to delete | Keep models outside the deletion decision path |
-| Report only success or failure | Distinguish confirmed, uncertain, and failed checks |
+Open the report to compare exact copies and likely photo versions. A version
+group shows paths, dimensions, file sizes and a limited set of previews. Record
+the file you would keep, download the review notes and reload them when you
+return. If you want a second opinion, send a small set of selected photo IDs to
+the optional vision advisor. Review notes and proposals leave source files intact.
 
 ## Mental model
 
@@ -259,39 +242,38 @@ The deterministic core owns consequential actions. Perceptual algorithms and
 language or vision models may rank or explain candidates, but cannot authorize a
 move or deletion.
 
-## Delivery plan
+## What comes next
 
-- **Phase 0 — Corpus and recovery:** map sources, formats, sidecars, backups, and
-  a tested restore path.
-- **Phase 1 — Inventory:** read-only traversal, file identity, metadata, SQLite
-  schema, and resumable scans.
-- **Phase 2 — Exact duplicates:** size grouping, SHA-256 verification, review
-  reports, and keeper policies.
-- **Phase 3 — Reversible actions:** manifests, quarantine, restore, retention,
-  and an append-only audit trail.
-- **Phase 4 — Visual candidates:** perceptual hashes, embeddings, thumbnails,
-  and threshold evaluation against a labeled sample.
-- **Phase 5 — Interfaces:** CLI/TUI first, followed by a local review UI and an
-  optional capability-limited MCP server.
-- **Phase 6 — Multi-device intake:** repeatable staging from a second Linux
-  computer and phones without silently changing source libraries.
+The next milestone is a review workflow that can follow a collection across
+drives and devices, resume interrupted analysis, and turn findings into a
+short, actionable review queue.
 
-## Planned repository shape
+1. **Intake and format coverage.** Investigate iPhone import on Linux, drive
+   identity after reconnecting, HEIC, Live Photos, and sidecars. Keep related
+   files associated during intake and review.
+2. **Content and retrieval.** Investigate better OCR for small text and scanned
+   PDFs, paper metadata with page references, more representative video
+   sampling, and indexed search over extracted evidence. Improve candidate
+   matching for crops, edits, and video versions.
+3. **Guided review and automation.** Add persistent review queues, proposals
+   with evidence links, and resumable jobs. Explore a read-only MCP interface
+   for searching the catalog and inspecting review groups.
+4. **Reversible cleanup.** Use explicit plans, fresh file checks, quarantine,
+   restore, and an audit trail. Treat permanent deletion as a separate decision
+   after retention.
+
+Third-party libraries, tools and MCP servers are open research topics. Candidate
+selection is pending.
+
+## Repository layout
 
 ```text
 photo-custodian/
-├── core/                    # deterministic inventory and action planning
-├── adapters/                # filesystem, EXIF, image, and import boundaries
-├── interfaces/              # CLI, TUI, local web UI, and optional MCP adapter
-├── migrations/              # versioned SQLite schema changes
-├── tests/                   # behavioral, recovery, and determinism evidence
-├── docs/                    # architecture, decisions, threat model, and operations
-├── README.md                # primary English introduction
-└── README_ES.md             # Spanish adaptation
+├── src/photo_custodian/  # CLI, SQLite catalog, analysis and offline reports
+├── tests/                # regression tests for the catalog, matching and reports
+├── docs/                 # technical design and decision records
+└── uv.lock               # resolved Python dependencies
 ```
-
-This tree is a target architecture, not a claim that the listed components have
-already been implemented.
 
 ## Non-negotiable rules
 

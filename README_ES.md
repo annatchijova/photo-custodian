@@ -7,14 +7,12 @@ versiones comprimidas, ráfagas, archivos auxiliares e importaciones repetidas
 desde celulares y computadoras. Borrar solamente por nombre o parecido visual
 puede destruir la única copia valiosa.
 
-Photo Custodian es una herramienta local para Linux, actualmente en etapa de
-diseño, que inventariará esas colecciones, identificará candidatos duplicados y
-moverá archivos revisados mediante una cuarentena reversible. La detección y el
-borrado son operaciones deliberadamente separadas.
+Photo Custodian inventaría archivos locales en Linux, agrupa duplicados y
+posibles versiones de fotos, y genera reportes HTML para revisar la colección
+por tandas. También crea un archivo consultable de capturas, papers y otros
+contenidos compatibles. La cuarentena reversible forma parte del plan.
 
-> Estado del proyecto: la detección de duplicados exactos M1 está implementada.
-> La CLI inventaría incrementalmente y verifica candidatos del mismo tamaño con
-> SHA-256 completo. La similitud visual y las mutaciones siguen sin implementar.
+El flujo de análisis de contenido está implementado. Su funcionamiento integral, el análisis remoto y el rendimiento con la colección de 3 TB siguen sin verificar.
 
 ## Ejecutar inventario y duplicados exactos
 
@@ -30,32 +28,87 @@ Puede cambiarse con `--catalog /ruta/al/catalog.sqlite3` o con
 `PHOTO_CUSTODIAN_CATALOG`. El escaneo lee metadatos de las fuentes y escribe
 solamente en el catálogo.
 
-## La experiencia propuesta
+## Revisar la biblioteca en HTML
 
-```text
-$ photo-custodian scan ~/Pictures /mnt/archive
-Indexed: 184,212 files
-Exact duplicate groups: 4,318
-Visual similarity groups: 1,027
-Actions performed: 0
-
-$ photo-custodian review --group exact:0042
-KEEP       /mnt/archive/2019/IMG_0042.HEIC
-QUARANTINE /home/user/Pictures/import-3/IMG_0042.HEIC
-Reason: identical SHA-256; keeper policy requires explicit confirmation
+```bash
+uv sync --locked --extra review
+uv run photo-custodian scan /ruta/a/una/carpeta
+uv run photo-custodian report --output revision-01.html
 ```
 
-El primer comando observa. El segundo prepara una acción reversible. Ninguno de
-los ejemplos implica que sea seguro borrar archivos solamente por parecerse.
+- **Copias exactas.** El reporte agrupa por SHA-256 y muestra avisos de cobertura.
+  Describe el estado observado durante el inventario y el análisis.
+- **Posibles versiones.** El análisis visual agrupa fotos de encuadre similar,
+  como reescalados y recomprimidos. Puede omitir recortes, ediciones fuertes,
+  formatos incompatibles y variantes de video. Los videos sí entran en la
+  detección exacta.
+- **Categorías sugeridas.** Con `--categorize ID1 ID2` y `OPENAI_API_KEY` podés
+  solicitar categorías para hasta diez fotos elegidas. Cada solicitud envía una
+  miniatura JPEG de hasta 320 píxeles en su lado mayor, sin metadatos de origen.
+  El texto visible en la imagen también puede quedar expuesto. El catálogo
+  guarda las sugerencias.
 
-| Limpieza habitual | Comportamiento propuesto de Photo Custodian |
-|---|---|
-| Trata nombres iguales como duplicados | Compara contenido independientemente del nombre |
-| Mezcla escaneo y borrado | Separa inventario, revisión, cuarentena y purga |
-| Deja que un puntaje decida | Presenta la similitud visual como candidata a revisión |
-| Reescanea toda la biblioteca siempre | Mantiene un catálogo local incremental |
-| Pregunta a una IA qué borrar | Mantiene los modelos fuera de la decisión de borrado |
-| Informa solamente éxito o error | Distingue comprobaciones confirmadas, inciertas y fallidas |
+El primer informe lee los archivos. Las ejecuciones siguientes reutilizan hashes
+y firmas visuales cuando corresponde. Usá `--offset 25` para pasar a la siguiente
+tanda con el límite predeterminado y elegí otro nombre de salida. El archivo HTML
+incluye rutas y miniaturas locales.
+
+## Crear un archivo consultable
+
+Usá carpetas exportadas o montadas desde el iPhone, la PC o un disco externo.
+Mantené el catálogo SQLite en la computadora que ejecuta Photo Custodian y
+reconectá cada disco en la misma ruta. El acceso directo al iPhone y la cobertura
+de HEIC quedan como líneas de investigación.
+
+```bash
+uv sync --locked --extra review
+uv run photo-custodian scan /ruta/a/la/biblioteca
+uv run photo-custodian analyze --source /ruta/a/la/biblioteca
+uv run photo-custodian archive --output archivo-01.html
+```
+
+El análisis avanza por tandas y guarda el resultado de cada archivo. Priorizá
+un tipo con `--kind image`, `--kind pdf` o `--kind video`. Usá
+`--retry-unavailable` al reconectar una fuente o recuperar una dependencia.
+Las imágenes usan Tesseract con datos de español e inglés. Para PDF, Poppler
+extrae texto de las primeras seis páginas. Los PDF escaneados requieren OCR
+aparte. FFmpeg toma un fotograma de los videos compatibles.
+
+`archive --query "texto que recordás"` busca en rutas, texto extraído y
+sugerencias guardadas. Agregá `--category "Scientific papers"` para filtrar
+por categoría y `--output busqueda.html` para generar una página local.
+
+Con `analyze --openai`, el agente puede proponer títulos, categorías,
+información destacada, reglas de organización y un posible motivo para
+guardar una captura. El modo optativo puede enviar una vista reducida,
+un fotograma o un extracto de texto a OpenAI. La extracción y la búsqueda
+predeterminadas son locales. Los resultados describen el contenido examinado.
+El motivo de una captura es una hipótesis.
+
+`compare 12 13 14 --openai` compara entre dos y seis fotos seleccionadas y
+devuelve una propuesta en JSON. El agente puede recomendar conservar varias
+o abstenerse.
+
+`workflow --source /ruta/a/la/biblioteca --output archivo-siguiente.html`
+genera un script revisable de escaneo, análisis y reporte. Con un disco externo,
+`--mountpoint /ruta/al/montaje` agrega una comprobación de montaje.
+`--batches` permite procesar varias tandas en una ejecución. Agregá
+`--openai` para incluir el análisis remoto en el script.
+
+## Obtener un próximo paso
+
+`uv run photo-custodian agent` ofrece un próximo paso a partir del inventario.
+`agent --openai` envía una solicitud con conteos y tamaños totales por tipo,
+sin fotos, nombres ni rutas. Podés configurar el modelo con `--model` o
+`OPENAI_MODEL`. Si falla la consulta, el próximo paso local sigue visible.
+
+## Cómo se ve una revisión
+
+Abrí el informe y compará copias exactas y posibles versiones. Un grupo de
+versiones muestra rutas, dimensiones, tamaños y una selección de miniaturas.
+Elegí el archivo que conservarías, descargá las notas y volvé a cargarlas al
+retomar. Si querés una segunda opinión, seleccioná algunas fotos para el
+asesor visual. Las notas y las propuestas dejan intactos los originales.
 
 ## Modelo conceptual
 
@@ -169,39 +222,38 @@ El núcleo determinista controla las acciones con consecuencias. Los algoritmos
 perceptuales y los modelos de lenguaje o visión pueden ordenar o explicar
 candidatos, pero no autorizar movimientos ni borrados.
 
-## Plan de entrega
+## Qué sigue
 
-- **Fase 0 — Corpus y recuperación:** mapear fuentes, formatos, archivos
-  auxiliares, backups y un camino de restauración probado.
-- **Fase 1 — Inventario:** recorrido de solo lectura, identidad de archivos,
-  metadatos, esquema SQLite y escaneos reanudables.
-- **Fase 2 — Duplicados exactos:** agrupación por tamaño, verificación SHA-256,
-  informes de revisión y políticas para elegir qué conservar.
-- **Fase 3 — Acciones reversibles:** manifiestos, cuarentena, restauración,
-  retención y registro append-only.
-- **Fase 4 — Candidatos visuales:** hashes perceptuales, embeddings, miniaturas y
-  evaluación de umbrales contra una muestra etiquetada.
-- **Fase 5 — Interfaces:** primero CLI/TUI; después interfaz web local y servidor
-  MCP opcional con capacidades limitadas.
-- **Fase 6 — Ingreso desde varios dispositivos:** staging repetible desde otra
-  computadora Linux y celulares sin modificar silenciosamente las bibliotecas.
+El próximo hito es una revisión que pueda seguir una colección entre discos
+y dispositivos, retomar análisis interrumpidos y convertir los hallazgos en una
+cola corta con decisiones concretas.
 
-## Estructura prevista
+1. **Ingreso y formatos.** Investigar la importación del iPhone en Linux, la
+   identidad del disco al reconectarlo, HEIC, Live Photos y archivos auxiliares.
+   Mantener asociados los archivos relacionados durante el ingreso y la revisión.
+2. **Contenido y búsqueda.** Investigar mejor OCR para letra chica y PDF
+   escaneados, metadatos de papers con referencias de página, muestras de video
+   más representativas y búsqueda indexada sobre la evidencia extraída. Mejorar
+   la detección de recortes, ediciones y versiones de video.
+3. **Revisión guiada y automatización.** Incorporar colas persistentes,
+   propuestas con enlaces a la evidencia y tareas reanudables. Explorar una
+   interfaz MCP de solo lectura para consultar el catálogo y los grupos.
+4. **Limpieza reversible.** Usar planes explícitos, comprobar de nuevo los
+   archivos, agregar cuarentena y restauración, y registrar las acciones.
+   El borrado permanente requiere una decisión posterior a la retención.
+
+La investigación de librerías, herramientas y servidores MCP sigue abierta.
+La selección de candidatos está pendiente.
+
+## Estructura del repositorio
 
 ```text
 photo-custodian/
-├── core/                    # inventario determinista y planificación de acciones
-├── adapters/                # límites de filesystem, EXIF, imágenes e importación
-├── interfaces/              # CLI, TUI, web local y adaptador MCP opcional
-├── migrations/              # cambios versionados del esquema SQLite
-├── tests/                   # evidencia de comportamiento, recuperación y determinismo
-├── docs/                    # arquitectura, decisiones, amenazas y operación
-├── README.md                # introducción principal en inglés
-└── README_ES.md             # adaptación en español
+├── src/photo_custodian/  # CLI, catálogo SQLite, análisis y reportes locales
+├── tests/                # regresión de catálogo, coincidencias y reportes
+├── docs/                 # diseño técnico y decisiones
+└── uv.lock               # dependencias Python resueltas
 ```
-
-Esta estructura es una arquitectura objetivo, no una afirmación de que sus
-componentes ya estén implementados.
 
 ## Reglas no negociables
 
@@ -223,7 +275,7 @@ confianza, elección de lenguajes, modos de falla y plan de verificación.
 
 ## Contribuciones
 
-El proyecto está en etapa de diseño. Las propuestas de arquitectura deben
+Las propuestas de arquitectura deben
 preservar el contrato de seguridad e incluir un plan de verificación falsable.
 El código, los comentarios, las pruebas, la documentación y los mensajes de
 commit se escriben en inglés; `README_ES.md` es la entrada mantenida en español.
