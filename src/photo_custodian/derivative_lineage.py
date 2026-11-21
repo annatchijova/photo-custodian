@@ -15,9 +15,12 @@ from .exact_duplicates import _catalog_fingerprint
 from .manifest_verify import _DIRECTORY_FLAGS, _FILE_FLAGS, file_fingerprint, read_digest
 
 _MAX_RECEIPT = 4 * 1024 * 1024
+_MAX_WHATSAPP_TEXT_ENTRY = 256 * 1024**2
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _MIME = re.compile(rb"([0-9a-f]{64})/(part-([0-9]{4})\.[a-z0-9]{1,10})")
 _TRANSCRIPT = re.compile(rb"(media-([1-9][0-9]{0,18}))/(window-([0-9]{7}))/transcript\.txt")
+_WHATSAPP = re.compile(rb"(?:(chat)|(member-([0-9]{6})))-text-([0-9]{5})\.txt")
+_WHATSAPP_MEMBER = re.compile(r"members/member-([0-9]{6})\.[a-z0-9]{1,10}")
 _IDENTITY_SQL = "json_array(f.size_bytes, f.mtime_ns, f.ctime_ns, f.device, f.inode)"
 
 
@@ -63,6 +66,56 @@ def _read_receipt(root: int, *parts: bytes) -> tuple[dict, str]:
     if not isinstance(result, dict) or type(result.get("schema_version")) is not int or result["schema_version"] != 1:
         raise ValueError("Unsupported receipt schema.")
     return result, hashlib.sha256(raw).hexdigest()
+
+
+def _staged_fingerprint(root: int, relative: bytes) -> tuple[int, int, int, int, int]:
+    """Read a bounded staged member identity without following symlinks."""
+    parts = relative.split(b"/")
+    if len(parts) > 256 or b"\x00" in relative or any(part in (b"", b".", b"..") for part in parts):
+        raise ValueError("Invalid staged member locator.")
+    with ExitStack() as stack:
+        directory = root
+        for part in parts[:-1]:
+            directory = os.open(part, _DIRECTORY_FLAGS, dir_fd=directory)
+            stack.callback(os.close, directory)
+        descriptor = os.open(parts[-1], _FILE_FLAGS, dir_fd=directory)
+        handle = stack.enter_context(os.fdopen(descriptor, "rb"))
+        before = os.fstat(handle.fileno())
+        fingerprint = file_fingerprint(before)
+        current = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+        if (not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_WHATSAPP_TEXT_ENTRY
+                or file_fingerprint(current) != fingerprint):
+            raise ValueError("Staged member changed or exceeds the limit.")
+    return fingerprint
+
+
+def _slice_digest(root: int, relative: bytes, expected: tuple, start: int, end: int) -> str:
+    """Hash one declared member range and require a stable descriptor identity."""
+    parts = relative.split(b"/")
+    with ExitStack() as stack:
+        directory = root
+        for part in parts[:-1]:
+            directory = os.open(part, _DIRECTORY_FLAGS, dir_fd=directory)
+            stack.callback(os.close, directory)
+        descriptor = os.open(parts[-1], _FILE_FLAGS, dir_fd=directory)
+        handle = stack.enter_context(os.fdopen(descriptor, "rb"))
+        before = os.fstat(handle.fileno())
+        if (not stat.S_ISREG(before.st_mode) or file_fingerprint(before) != expected
+                or not 0 <= start < end <= before.st_size):
+            raise ValueError("Staged member range is unavailable.")
+        handle.seek(start)
+        digest = hashlib.sha256()
+        remaining = end - start
+        while remaining:
+            block = handle.read(min(1024 * 1024, remaining))
+            if not block:
+                raise ValueError("Staged member range is incomplete.")
+            digest.update(block)
+            remaining -= len(block)
+        current = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+        if file_fingerprint(os.fstat(handle.fileno())) != expected or file_fingerprint(current) != expected:
+            raise ValueError("Staged member changed while reading its range.")
+    return digest.hexdigest()
 
 
 def _mime(root: int, match: re.Match[bytes], size: int) -> dict:
@@ -120,19 +173,84 @@ def _transcript(root: int, match: re.Match[bytes]) -> dict:
     }
 
 
-def link_row(connection: sqlite3.Connection, row: sqlite3.Row) -> str | None:
+def _whatsapp(root: int, match: re.Match[bytes], size: int, cache: dict) -> dict:
+    """Validate a bounded WhatsApp fragment receipt without exposing its text."""
+    chat, member, index_bytes, _ = match.groups()
+    filename = match.group(0).decode("ascii")
+    receipt, receipt_hash = _read_receipt(root, b".whatsapp-lineage", filename.encode() + b".json")
+    source, source_receipt_hash = _read_receipt(root, b".whatsapp-source.json")
+    required = {
+        "schema_version", "kind", "source_sha256", "source_size", "entry_index",
+        "entry_sha256", "entry_size", "byte_range", "fragment_filename", "fragment_sha256",
+    }
+    allowed = required | {"member_filename"}
+    if set(receipt) not in (required, allowed) or set(source) != {
+        "schema_version", "source_sha256", "source_size"
+    } or receipt.get("kind") != "whatsapp_text_fragment":
+        raise ValueError("WhatsApp fragment receipt is invalid.")
+    source_hash = _sha(receipt["source_sha256"])
+    source_size = _integer(receipt["source_size"], 1, 2**63 - 1)
+    entry = _integer(receipt["entry_index"], 0, 30_000)
+    entry_hash = _sha(receipt["entry_sha256"])
+    entry_size = _integer(receipt["entry_size"], 1, _MAX_WHATSAPP_TEXT_ENTRY)
+    fragment_hash = _sha(receipt["fragment_sha256"])
+    byte_range = receipt["byte_range"]
+    if (not isinstance(byte_range, list) or len(byte_range) != 2
+            or type(byte_range[0]) is not int or type(byte_range[1]) is not int):
+        raise ValueError("WhatsApp fragment range is invalid.")
+    start, end = byte_range
+    if not 0 <= start < end <= entry_size or end - start != size:
+        raise ValueError("WhatsApp fragment range differs from the catalogue.")
+    if (source_hash != _sha(source["source_sha256"])
+            or source_size != _integer(source["source_size"], 1, 2**63 - 1)
+            or receipt["fragment_filename"] != filename):
+        raise ValueError("WhatsApp fragment receipt does not match its source record.")
+    if chat is not None:
+        if entry != 0 or entry_hash != source_hash or entry_size != source_size or "member_filename" in receipt:
+            raise ValueError("WhatsApp text export receipt is invalid.")
+    else:
+        if entry != int(index_bytes) or not isinstance(receipt.get("member_filename"), str):
+            raise ValueError("WhatsApp ZIP member receipt is invalid.")
+        member_name = receipt["member_filename"]
+        member_match = _WHATSAPP_MEMBER.fullmatch(member_name)
+        if member_match is None or int(member_match.group(1)) != entry:
+            raise ValueError("WhatsApp ZIP member locator is invalid.")
+        member_relative = member_name.encode("ascii")
+        fingerprint = _staged_fingerprint(root, member_relative)
+        cached = cache.get(member_relative)
+        if cached is None or cached[0] != fingerprint:
+            cached = (fingerprint, read_digest(root, member_relative, expected=fingerprint))
+            cache[member_relative] = cached
+        if cached[1] != (entry_size, entry_hash):
+            raise ValueError("WhatsApp ZIP member bytes do not match the receipt.")
+        if _slice_digest(root, member_relative, fingerprint, start, end) != fragment_hash:
+            raise ValueError("WhatsApp fragment differs from its declared member range.")
+    return {
+        "kind": "whatsapp_text_fragment", "parent_sha256": source_hash,
+        "derivative_sha256": fragment_hash, "receipt_sha256": receipt_hash,
+        "source_receipt_sha256": source_receipt_hash, "entry_index": entry,
+        "entry_sha256": entry_hash, "byte_start": start, "byte_end": end,
+        "range_basis": "export_bytes" if chat is not None else "decompressed_zip_member_bytes",
+    }
+
+
+def link_row(connection: sqlite3.Connection, row: sqlite3.Row, cache: dict | None = None) -> str | None:
     relative = bytes(row["relative_path_bytes"])
     mime = _MIME.fullmatch(relative)
     transcript = _TRANSCRIPT.fullmatch(relative)
-    if mime is None and transcript is None:
+    whatsapp = _WHATSAPP.fullmatch(relative)
+    if mime is None and transcript is None and whatsapp is None:
         return None
+    if cache is None:
+        cache = {}
     result: dict = {}
     try:
         root = os.open(bytes(row["root_path_bytes"]), _DIRECTORY_FLAGS)
         try:
-            marker = b".mime-source.json" if mime else b".transcript-source.json"
+            marker = b".mime-source.json" if mime else b".transcript-source.json" if transcript else b".whatsapp-source.json"
             _read_receipt(root, marker)
-            result = _mime(root, mime, row["size_bytes"]) if mime else _transcript(root, transcript)
+            result = (_mime(root, mime, row["size_bytes"]) if mime else _transcript(root, transcript)
+                      if transcript else _whatsapp(root, whatsapp, row["size_bytes"], cache))
             _, digest = read_digest(root, relative, expected=_catalog_fingerprint(row))
             if digest != result["derivative_sha256"]:
                 raise ValueError("Derivative bytes do not match the receipt.")
@@ -167,13 +285,16 @@ def backfill(catalog, args) -> int:
         LEFT JOIN file_lineage l ON l.file_id = f.id AND l.fingerprint = {_IDENTITY_SQL}
         WHERE f.status = 'active' AND f.source_id = ? AND {condition}
           AND (f.relative_path GLOB '*/part-[0-9][0-9][0-9][0-9].*'
-               OR f.relative_path GLOB 'media-*/window-*/transcript.txt')
+               OR f.relative_path GLOB 'media-*/window-*/transcript.txt'
+               OR f.relative_path GLOB 'chat-text-*.txt'
+               OR f.relative_path GLOB 'member-*-text-*.txt')
         ORDER BY f.id
         LIMIT ?
     """, (args.source_id, args.limit + 1)).fetchall()
     counts = Counter()
+    cache: dict = {}
     for row in rows[:args.limit]:
-        status = link_row(connection, row)
+        status = link_row(connection, row, cache)
         if status is None:
             connection.execute("""
                 INSERT OR IGNORE INTO file_lineage(file_id, fingerprint, status, record)
@@ -207,6 +328,16 @@ def public_lineage(status: str | None, raw: str | None) -> dict:
             ):
                 fields[key] = _integer(record[key], low, high)
             fields["timestamp_basis"] = "decoded_window_relative"
+        elif record["kind"] == "whatsapp_text_fragment":
+            fields.update({key: _sha(record[key]) for key in ("source_receipt_sha256", "entry_sha256")})
+            fields["entry_index"] = _integer(record["entry_index"], 0, 30_000)
+            fields["byte_start"] = _integer(record["byte_start"], 0, _MAX_WHATSAPP_TEXT_ENTRY)
+            fields["byte_end"] = _integer(record["byte_end"], 1, _MAX_WHATSAPP_TEXT_ENTRY)
+            if fields["byte_start"] >= fields["byte_end"]:
+                raise ValueError("Invalid WhatsApp public range.")
+            fields["range_basis"] = record["range_basis"]
+            if fields["range_basis"] not in ("export_bytes", "decompressed_zip_member_bytes"):
+                raise ValueError("Invalid WhatsApp range basis.")
         else:
             raise ValueError("Unknown lineage type.")
     except (ValueError, TypeError, KeyError, RecursionError):

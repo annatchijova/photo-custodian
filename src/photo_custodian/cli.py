@@ -164,7 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
     handoff_parser.add_argument("--source-id", type=int, action="append", help="limit to these catalog sources")
     handoff_parser.add_argument("--output", type=Path, required=True, help="new HTML or JSON output")
 
-    lineage_parser = subparsers.add_parser("link-derivatives", help="backfill checked MIME and transcript references")
+    lineage_parser = subparsers.add_parser("link-derivatives", help="backfill checked MIME, transcript and WhatsApp references")
     lineage_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
     lineage_parser.add_argument("--source-id", type=int, required=True)
     lineage_parser.add_argument("--limit", type=int, default=250)

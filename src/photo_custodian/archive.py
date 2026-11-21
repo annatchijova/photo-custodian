@@ -103,8 +103,9 @@ def analyze_batch(catalog: Catalog, args: Namespace) -> int:
         print("No pending items in this source and file type.")
         return 3
     complete = unavailable = rejected = incomplete = unverified_links = 0
+    lineage_cache: dict = {}
     for row in rows:
-        if link_row(catalog.connection, row) == "unverified":
+        if link_row(catalog.connection, row, lineage_cache) == "unverified":
             unverified_links += 1
         try:
             evidence = extract(row, ocr_language=args.ocr_language, whisper_model=args.whisper_model)

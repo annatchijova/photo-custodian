@@ -147,6 +147,12 @@ local receipts without contacting Gmail.
 TXT export. Its completed index links staged files and chat fragments to
 the source. Keep the original export. Scan the staged directory to analyze
 the copies. Large chats are split into bounded searchable text fragments.
+Newly staged fragments also carry small private receipts with their own hash,
+their byte range, and the declared export hash. ZIP fragments additionally
+record their numbered decompressed member, so repeated member names do not
+collapse into one source. Older staging directories without those receipts
+remain explicitly unverified. A receipt proves a local derivative relation;
+verify the original export separately with an anchored byte manifest.
 
 `analyze --whisper-model /path/to/model.pt` enables transcription with an
 installed local Whisper CLI and FFmpeg. It uses a sample of up to the first

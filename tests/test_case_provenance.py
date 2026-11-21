@@ -7,6 +7,7 @@ import sqlite3
 import stat
 import tempfile
 import unittest
+import zipfile
 from contextlib import closing, redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -163,3 +164,73 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(self.catalog.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(report.stat().st_mode), 0o600)
         self.assertNotIn("sample.txt", report.read_text())
+
+    def test_whatsapp_text_fragment_is_bound_to_a_private_receipt_and_mutation_unlinks_it(self):
+        originals = self.root / "originals"
+        originals.mkdir()
+        export = originals / "private-chat.txt"
+        export.write_bytes(b"first synthetic line\nsecond synthetic line\n")
+        staged = self.root / "whatsapp-working"
+        self.command("intake-whatsapp", str(export), "--output", str(staged), catalog=False)
+        fragment, = staged.glob("chat-text-*.txt")
+        self.command("scan", str(originals))
+        self.command("scan", str(staged))
+        self.command("analyze", "--source", str(staged))
+        item, raw = self.handoff_item(self.file_id(fragment.name), "whatsapp.json")
+        lineage = item["lineage"]
+        self.assertEqual(lineage["kind"], "whatsapp_text_fragment")
+        self.assertEqual(lineage["range_basis"], "export_bytes")
+        self.assertEqual(lineage["entry_index"], 0)
+        self.assertEqual(lineage["parent_sha256"], hashlib.sha256(export.read_bytes()).hexdigest())
+        self.assertNotIn("private-chat", raw)
+        self.assertNotIn("first synthetic line", raw)
+
+        fragment.write_bytes(b"FIRST synthetic line\nsecond synthetic line\n")
+        self.command("scan", str(staged))
+        self.command("analyze", "--source", str(staged), expected=1)
+        item, _ = self.handoff_item(self.file_id(fragment.name), "whatsapp-mutated.json")
+        self.assertEqual(item["lineage"], {"status": "unverified"})
+
+    def test_whatsapp_zip_fragments_distinguish_duplicate_member_names_without_disclosing_them(self):
+        originals = self.root / "originals"
+        originals.mkdir()
+        export = originals / "private-export.zip"
+        with zipfile.ZipFile(export, "w") as archive:
+            archive.writestr("same-name.txt", b"first duplicate member\n")
+            archive.writestr("same-name.txt", b"second duplicate member\n")
+        staged = self.root / "whatsapp-working"
+        self.command("intake-whatsapp", str(export), "--output", str(staged), catalog=False)
+        fragments = sorted(staged.glob("member-*-text-*.txt"))
+        self.assertEqual(len(fragments), 2)
+        self.command("scan", str(originals))
+        self.command("scan", str(staged))
+        self.command("analyze", "--source", str(staged), "--limit", "10")
+        rows = []
+        report = self.root / "zip-whatsapp.json"
+        self.command("case-handoff", "--output", str(report))
+        for fragment in fragments:
+            file_id = self.file_id(fragment.name)
+            rows.append(next(item for item in json.loads(report.read_text())["items"]
+                             if item["file_id"] == file_id)["lineage"])
+        self.assertEqual([row["entry_index"] for row in rows], [1, 2])
+        self.assertTrue(all(row["range_basis"] == "decompressed_zip_member_bytes" for row in rows))
+        raw = report.read_text()
+        self.assertNotIn("same-name", raw)
+        self.assertNotIn("duplicate member", raw)
+
+    def test_whatsapp_zip_fragment_rejects_a_same_size_wrong_member_range(self):
+        export = self.root / "private-export.zip"
+        content = b"A" * 24_000 + b"B" * 4_000
+        with zipfile.ZipFile(export, "w") as archive:
+            archive.writestr("chat.txt", content)
+        staged = self.root / "whatsapp-working"
+        self.command("intake-whatsapp", str(export), "--output", str(staged), catalog=False)
+        fragment, = staged.glob("member-000001-text-00000.txt")
+        receipt_path = staged / ".whatsapp-lineage" / (fragment.name + ".json")
+        receipt = json.loads(receipt_path.read_text())
+        receipt["byte_range"] = [1, len(fragment.read_bytes()) + 1]
+        receipt_path.write_text(json.dumps(receipt))
+        self.command("scan", str(staged))
+        self.command("analyze", "--source", str(staged), expected=1)
+        item, _ = self.handoff_item(self.file_id(fragment.name), "wrong-range.json")
+        self.assertEqual(item["lineage"], {"status": "unverified"})

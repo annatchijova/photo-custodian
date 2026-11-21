@@ -134,7 +134,13 @@ sus registros locales, sin conexión a Gmail.
 a partir de un ZIP o TXT exportado. El índice final vincula los archivos y
 fragmentos con su fuente. Conservá el export original. Escaneá la carpeta
 preparada para analizar las copias. Los chats largos se dividen en fragmentos
-buscables de tamaño acotado.
+buscables de tamaño acotado. Los fragmentos nuevos además llevan registros
+privados pequeños con su hash, rango de bytes y el hash declarado del export.
+En ZIP, también identifican el miembro descomprimido por número para que dos
+miembros con el mismo nombre no se confundan. Las carpetas anteriores sin
+esos registros quedan explícitamente sin verificar. El registro prueba una
+relación local de derivación; cotejá el export original por separado con un
+manifiesto de bytes anclado.
 
 `analyze --whisper-model /ruta/modelo.pt` habilita transcripción con Whisper
 local y FFmpeg ya instalados. Procesa hasta los primeros diez minutos de cada

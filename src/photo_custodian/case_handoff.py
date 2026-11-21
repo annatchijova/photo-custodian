@@ -150,6 +150,11 @@ La ausencia de una propuesta permite saber cómo respondió el agente y deja pen
                 reference = f"Parte MIME {lineage['part_index']}"
             elif lineage.get("kind") == "transcript_window":
                 reference = f"Ventana solicitada desde {lineage['requested_start_seconds']} s"
+            elif lineage.get("kind") == "whatsapp_text_fragment":
+                basis = ("export" if lineage["range_basis"] == "export_bytes"
+                         else "miembro ZIP descomprimido")
+                reference = (f"Fragmento WhatsApp {lineage['entry_index']} · {basis} · "
+                             f"bytes {lineage['byte_start']}-{lineage['byte_end']}")
             elif lineage["status"] == "unverified":
                 reference = "Sin verificar"
             else:
