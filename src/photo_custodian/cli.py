@@ -50,6 +50,10 @@ def build_parser() -> argparse.ArgumentParser:
     register_parser.add_argument("--mount", type=Path, required=True)
     register_parser.add_argument("--folder", default=".")
 
+    sources_parser = subparsers.add_parser("sources", help="list last recorded source states")
+    sources_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
+    sources_parser.add_argument("--show-paths", action="store_true")
+
     source_scan_parser = subparsers.add_parser("source-scan", help="scan a registered source at its current mount")
     source_scan_parser.add_argument("source_id", type=int)
     source_scan_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
@@ -95,12 +99,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     analyze_parser = subparsers.add_parser("analyze", help="extract and optionally interpret archive content")
     analyze_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
-    analyze_parser.add_argument("--source", type=Path, required=True)
+    analyze_source = analyze_parser.add_mutually_exclusive_group(required=True)
+    analyze_source.add_argument("--source", type=Path)
+    analyze_source.add_argument("--source-id", type=int)
     analyze_parser.add_argument("--kind", choices=KINDS, default="all")
     analyze_parser.add_argument("--limit", type=int, default=100)
     analyze_parser.add_argument("--ocr-language", default="eng+spa")
     analyze_parser.add_argument("--whisper-model", type=Path, help="installed local Whisper .pt weights")
     analyze_parser.add_argument("--retry-unavailable", action="store_true")
+    analyze_parser.add_argument("--retry-triage", action="store_true", help="retry rejected model outputs")
     _add_inference_options(analyze_parser)
 
     archive_parser = subparsers.add_parser("archive", help="search extracted text and generate a review")
@@ -133,6 +140,9 @@ def build_parser() -> argparse.ArgumentParser:
     gmail_parser.add_argument("--output", type=Path, required=True)
     gmail_parser.add_argument("--pages", type=int, default=4)
 
+    verify_mail_parser = subparsers.add_parser("verify-mail-intake", help="check local Gmail bytes against receipts")
+    verify_mail_parser.add_argument("--source", type=Path, required=True)
+
     attachments_parser = subparsers.add_parser("stage-mail-attachments", help="stage EML attachments for local analysis")
     attachments_parser.add_argument("--source", type=Path, required=True)
     attachments_parser.add_argument("--output", type=Path, required=True)
@@ -154,6 +164,12 @@ def build_parser() -> argparse.ArgumentParser:
     handoff_parser.add_argument("--source-id", type=int, action="append", help="limit to these catalog sources")
     handoff_parser.add_argument("--output", type=Path, required=True, help="new HTML or JSON output")
 
+    lineage_parser = subparsers.add_parser("link-derivatives", help="backfill checked MIME and transcript references")
+    lineage_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
+    lineage_parser.add_argument("--source-id", type=int, required=True)
+    lineage_parser.add_argument("--limit", type=int, default=250)
+    lineage_parser.add_argument("--retry-unverified", action="store_true")
+
     manifest_parser = subparsers.add_parser("manifest", help="record selected working-copy file bytes")
     manifest_parser.add_argument("ids", nargs="+", type=int)
     manifest_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
@@ -164,6 +180,12 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--root", type=Path, required=True)
     verify_parser.add_argument("--expected-sha256", help="payload digest retained independently")
 
+    parents_parser = subparsers.add_parser("verify-lineage-parents", help="record checks against an anchored byte manifest")
+    parents_parser.add_argument("manifest", type=Path)
+    parents_parser.add_argument("--root", type=Path, required=True)
+    parents_parser.add_argument("--expected-sha256", required=True)
+    parents_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
+
     fracture_parser = subparsers.add_parser("fracture-plan", help="plan intake from an anchored byte manifest")
     fracture_parser.add_argument("manifest", type=Path)
     fracture_parser.add_argument("--expected-sha256", required=True)
@@ -172,10 +194,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     workflow_parser = subparsers.add_parser("workflow", help="print a reviewable archive workflow script")
     workflow_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
-    workflow_parser.add_argument("--source", type=Path, required=True)
+    workflow_source = workflow_parser.add_mutually_exclusive_group(required=True)
+    workflow_source.add_argument("--source", type=Path)
+    workflow_source.add_argument("--source-id", type=int)
     workflow_parser.add_argument("--kind", choices=KINDS, default="all")
     workflow_parser.add_argument("--output", type=Path, required=True)
-    workflow_parser.add_argument("--openai", action="store_true", help="include opt-in OpenAI analysis")
+    _add_inference_options(workflow_parser)
     workflow_parser.add_argument("--batches", type=int, default=1, help="maximum analysis batches per run")
     workflow_parser.add_argument("--mountpoint", type=Path, help="require this external mount when the script runs")
     return parser
@@ -278,6 +302,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .transcript_queue import stage_transcripts
 
             return stage_transcripts(arguments)
+        if arguments.command == "verify-mail-intake":
+            from .intake import verify_mail_intake
+
+            return verify_mail_intake(arguments)
         if arguments.command == "stage-mail-attachments":
             from .mail_attachments import stage_attachments
 
@@ -306,12 +334,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .grounded_search import ask
 
             return ask(arguments)
+        if arguments.command == "sources":
+            from .registered_sources import list_sources
+
+            return list_sources(arguments)
         if arguments.command == "workflow":
             from .archive import workflow_script
 
             workflow_script(arguments)
             return 0
         with Catalog(arguments.catalog) as catalog:
+            if arguments.command == "verify-lineage-parents":
+                from .parent_checks import verify_parents
+
+                return verify_parents(catalog, arguments)
+            if arguments.command == "link-derivatives":
+                from .derivative_lineage import backfill
+
+                return backfill(catalog, arguments)
             if arguments.command in ("source-register", "source-scan"):
                 from .registered_sources import register, scan
 

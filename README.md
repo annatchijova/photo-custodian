@@ -117,6 +117,13 @@ mountpoint changes. The scanner pins the root directory during traversal
 and stages rows in one transaction. If the attachment changes, the scan is
 discarded and previously catalogued paths are retained.
 
+Use `sources` to list catalog IDs and last recorded states without probing
+devices. `analyze --source-id ID` checks the current attachment of a registered
+source. `workflow --source-id ID --mountpoint MOUNT --output REVIEW.html`
+prints a script for guarded scanning, bounded analysis and a metadata-only
+handoff for that source. Add `--openai` or `--ollama --model MODEL` to include
+explicit model analysis.
+
 This option supports full Linux block-device mounts that expose the UUID
 mapping under `/dev/disk/by-uuid`. Layouts that cannot be verified use the
 existing working-copy intake. For phones or another computer, catalog an
@@ -133,6 +140,8 @@ embedded in the original MIME messages. `stage-mail-attachments --source DIRECTO
 Each private receipt ties a MIME part and its decoded SHA-256 to the source EML
 digest. The batch reports unavailable and partial messages. Scan the completed
 working directory to analyze derivatives. Keep the EML folder separately.
+`verify-mail-intake --source DIRECTORY` checks downloaded EML bytes against
+local receipts without contacting Gmail.
 
 `intake-whatsapp EXPORT --output DIRECTORY` stages a user-supplied ZIP or
 TXT export. Its completed index links staged files and chat fragments to
@@ -190,6 +199,22 @@ for the full machine-readable catalog index, or `--source-id ID` to limit scope.
 The browser version caps the visible lead list. Both formats omit media,
 filenames, excerpts and free-text model notes. IDs refer to this catalog.
 An absent lead or incomplete extraction leaves human review open.
+The report distinguishes bounded, truncated, unavailable and unknown text
+coverage. Invalid per-item model responses are recorded and the queue
+continues. Use `analyze --retry-triage` to revisit rejected outputs; provider
+connection or authentication failures still pause the batch.
+
+### Link mail and transcript derivatives
+
+For catalogued attachment and transcript staging roots, analysis compares
+derivative bytes with their staging records. `link-derivatives --source-id ID`
+backfills links for already catalogued files without inference. Use
+`--retry-unverified` to repeat incomplete checks. The JSON handoff carries
+the MIME part or transcript window, derivative hash, and the parent hash
+declared in the receipt. This is the last catalogued check. Verify parent
+bytes separately when available. `verify-lineage-parents MANIFEST --root ROOT
+--expected-sha256 DIGEST` checks a working copy and saves the result for the
+next handoff. The match applies to the declared hash, at the time of reading.
 
 ## Record a working-copy byte manifest
 

@@ -14,6 +14,10 @@ class AdviceUnavailable(RuntimeError):
     """The API did not provide usable advisory text."""
 
 
+class AdviceRejected(AdviceUnavailable):
+    """The model response cannot be used for this item."""
+
+
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -66,7 +70,7 @@ def _request_text(payload: dict[str, object], *, api_key: str) -> str:
         raise AdviceUnavailable("Could not reach OpenAI.") from None
 
     if len(raw) > _MAX_RESPONSE_BYTES:
-        raise AdviceUnavailable("OpenAI response exceeded the size limit.")
+        raise AdviceRejected("OpenAI response exceeded the size limit.")
     try:
         payload = json.loads(raw)
         if payload["status"] == "completed":
@@ -82,4 +86,4 @@ def _request_text(payload: dict[str, object], *, api_key: str) -> str:
                 return advice
     except (KeyError, TypeError, ValueError):
         pass
-    raise AdviceUnavailable("OpenAI did not return usable advice.")
+    raise AdviceRejected("OpenAI did not return usable advice.")

@@ -113,12 +113,8 @@ def read_manifest(path: Path) -> tuple[dict, str]:
     return payload, digest
 
 
-def verify(args) -> int:
-    payload, digest = read_manifest(args.manifest)
-    expected = args.expected_sha256
-    if expected is not None and (not _digest_text(expected) or expected != digest):
-        raise ValueError("Manifest does not match the independently supplied digest.")
-    root = os.open(args.root.expanduser(), _DIRECTORY_FLAGS)
+def check_entries(payload: dict, root_path: Path) -> list[dict]:
+    root = os.open(root_path.expanduser(), _DIRECTORY_FLAGS)
     results = []
     try:
         for entry in payload["files"]:
@@ -132,6 +128,15 @@ def verify(args) -> int:
             results.append({"file_id": entry["file_id"], "status": status})
     finally:
         os.close(root)
+    return results
+
+
+def verify(args) -> int:
+    payload, digest = read_manifest(args.manifest)
+    expected = args.expected_sha256
+    if expected is not None and (not _digest_text(expected) or expected != digest):
+        raise ValueError("Manifest does not match the independently supplied digest.")
+    results = check_entries(payload, args.root)
     print(json.dumps({
         "payload_sha256": digest, "external_digest_matched": expected is not None, "files": results,
     }, indent=2))

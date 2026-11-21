@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import stat
 from pathlib import Path
 from typing import Any, Iterable
 
 
-CATALOG_SCHEMA_VERSION = 5
+CATALOG_SCHEMA_VERSION = 7
 
 
 SCHEMA_V1 = """
@@ -135,12 +136,61 @@ CREATE TABLE registered_mounts (
 """
 
 
+FILE_LINEAGE_TABLE_V6 = """
+CREATE TABLE file_lineage (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('derivative_matched_receipt', 'unverified', 'not_applicable')),
+    record TEXT NOT NULL,
+    PRIMARY KEY (file_id, fingerprint)
+)
+"""
+
+
+PARENT_BYTE_CHECKS_TABLE_V7 = """
+CREATE TABLE parent_byte_checks (
+    id INTEGER PRIMARY KEY,
+    manifest_sha256 TEXT NOT NULL,
+    manifest_file_id INTEGER NOT NULL,
+    manifest_source_id INTEGER NOT NULL,
+    parent_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('match', 'mismatch', 'unavailable')),
+    checked_utc TEXT NOT NULL
+)
+"""
+
+PARENT_BYTE_CHECKS_INDEX_V7 = """
+CREATE INDEX parent_byte_checks_digest_idx ON parent_byte_checks(parent_sha256, checked_utc DESC)
+"""
+
+
+def _protect_catalog_file(path: Path, *, create: bool = False) -> None:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    try:
+        descriptor = os.open(path, flags | (os.O_CREAT if create else 0), 0o600)
+    except FileNotFoundError:
+        if create:
+            raise
+        return
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid():
+            raise ValueError("Catalog files must be regular files owned by the current user.")
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
+
+
 class Catalog:
     """Versioned SQLite catalog for read-only source inventory."""
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
         self.path = Path(path).expanduser()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _protect_catalog_file(self.path, create=True)
+        for suffix in ("-journal", "-wal", "-shm"):
+            _protect_catalog_file(self.path.with_name(self.path.name + suffix))
         self.connection = sqlite3.connect(self.path)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
@@ -188,6 +238,9 @@ class Catalog:
                 self.connection.execute(PHOTO_CATEGORIES_TABLE_V3)
                 self.connection.execute(ARCHIVE_ANALYSIS_TABLE_V4)
                 self.connection.execute(REGISTERED_MOUNTS_TABLE_V5)
+                self.connection.execute(FILE_LINEAGE_TABLE_V6)
+                self.connection.execute(PARENT_BYTE_CHECKS_TABLE_V7)
+                self.connection.execute(PARENT_BYTE_CHECKS_INDEX_V7)
                 self.connection.execute(
                     "INSERT INTO schema_metadata(singleton, schema_version) VALUES (1, ?)",
                     (CATALOG_SCHEMA_VERSION,),
@@ -218,6 +271,14 @@ class Catalog:
             if stored_version == 4:
                 self._migrate_v4_to_v5()
                 stored_version = 5
+                continue
+            if stored_version == 5:
+                self._migrate_v5_to_v6()
+                stored_version = 6
+                continue
+            if stored_version == 6:
+                self._migrate_v6_to_v7()
+                stored_version = 7
                 continue
             self.connection.close()
             raise RuntimeError(
@@ -277,6 +338,25 @@ class Catalog:
                 "UPDATE schema_metadata SET schema_version = 5 WHERE singleton = 1"
             )
             self.connection.execute("PRAGMA user_version = 5")
+
+    def _migrate_v5_to_v6(self) -> None:
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            self.connection.execute(FILE_LINEAGE_TABLE_V6)
+            self.connection.execute(
+                "UPDATE schema_metadata SET schema_version = 6 WHERE singleton = 1"
+            )
+            self.connection.execute("PRAGMA user_version = 6")
+
+    def _migrate_v6_to_v7(self) -> None:
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            self.connection.execute(PARENT_BYTE_CHECKS_TABLE_V7)
+            self.connection.execute(PARENT_BYTE_CHECKS_INDEX_V7)
+            self.connection.execute(
+                "UPDATE schema_metadata SET schema_version = 7 WHERE singleton = 1"
+            )
+            self.connection.execute("PRAGMA user_version = 7")
 
     def ensure_source(self, root: Path) -> int:
         root_bytes = os.fsencode(root)

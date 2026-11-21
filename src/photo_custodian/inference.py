@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from .advisor import AdviceUnavailable, _NoRedirect, _request_text
+from .advisor import AdviceRejected, AdviceUnavailable, _NoRedirect, _request_text
 
 _OLLAMA = "http://127.0.0.1:11434/api/chat"
 _RESPONSE_LIMIT = 256 * 1024
@@ -33,9 +33,9 @@ class Inference:
         try:
             record = json.loads(response)
         except (ValueError, RecursionError):
-            raise AdviceUnavailable("The model returned invalid JSON.") from None
+            raise AdviceRejected("The model returned invalid JSON.") from None
         if not isinstance(record, dict):
-            raise AdviceUnavailable("The model returned an invalid record.")
+            raise AdviceRejected("The model returned an invalid record.")
         return record
 
     def _ollama(self, content: list[dict[str, str]], instructions: str) -> str:
@@ -62,7 +62,7 @@ class Inference:
         except (URLError, OSError, ValueError):
             raise AdviceUnavailable("Could not reach Ollama on this machine.") from None
         if len(raw) > _RESPONSE_LIMIT:
-            raise AdviceUnavailable("Ollama response exceeded the size limit.")
+            raise AdviceRejected("Ollama response exceeded the size limit.")
         try:
             result = json.loads(raw)
             content = result["message"]["content"]
@@ -70,7 +70,7 @@ class Inference:
                 return content
         except (TypeError, KeyError, ValueError, RecursionError):
             pass
-        raise AdviceUnavailable("Ollama returned no usable advice.")
+        raise AdviceRejected("Ollama returned no usable advice.")
 
 
 def select_inference(args) -> Inference | None:

@@ -14,6 +14,7 @@ from html import escape
 from .advisor import AdviceUnavailable
 from .catalog import Catalog
 from .exact_duplicates import _catalog_fingerprint, _valid_hash_predicate, find_exact_duplicates
+from .intake import _write
 from .photo_categories import CATEGORIES, suggest_category
 from .visual_review import find_versions, image_rows, read_photo
 
@@ -272,8 +273,7 @@ Showing {len(visual_cards)} of {len(versions)} groups after skipping {args.offse
 </section>
 </main><script>{_SCRIPT}</script></html>
 """
-    with output.open("x", encoding="utf-8") as handle:
-        handle.write(html)
+    _write(output, html.encode("utf-8"))
     print(f"Review report: {str(output)!r}")
     if warning:
         print("WARN: See coverage and categorization details in the report.", file=sys.stderr)

@@ -12,9 +12,13 @@ from html import escape
 from pathlib import Path
 
 from . import archive_advisor
+from .advisor import AdviceRejected, AdviceUnavailable
 from .archive_evidence import EvidenceUnavailable, extract
 from .catalog import Catalog
+from .derivative_lineage import link_row
 from .inference import select_inference
+from .intake import _write
+from .registered_sources import require_attached_source
 
 ANALYSIS_VERSION = 1
 KINDS = {
@@ -60,35 +64,52 @@ def _save(catalog: Catalog, row: sqlite3.Row, *, status: str, scope: str,
 
 
 def analyze_batch(catalog: Catalog, args: Namespace) -> int:
-    source = _source(args.source)
     if not 1 <= args.limit <= 100:
         raise ValueError("Use a batch limit from 1 to 100.")
     if args.ocr_language not in ("eng", "spa", "eng+spa"):
         raise ValueError("Use eng, spa or eng+spa for OCR.")
     inference = select_inference(args)
-    if catalog.connection.execute(
-        "SELECT 1 FROM sources WHERE root_path_bytes = ?", (source,)
-    ).fetchone() is None:
+    if args.source_id is not None and not 1 <= args.source_id <= 2**63 - 1:
+        raise ValueError("Use a positive catalog source ID.")
+    selector = "s.id = ?" if args.source_id is not None else "s.root_path_bytes = ?"
+    value = args.source_id if args.source_id is not None else _source(args.source)
+    source = catalog.connection.execute(f"""
+        SELECT s.*, m.filesystem_uuid, m.folder_bytes
+        FROM sources s LEFT JOIN registered_mounts m ON m.source_id = s.id
+        WHERE {selector}
+    """, (value,)).fetchone()
+    if source is None:
         raise ValueError("Scan this source first.")
+    require_attached_source(source)
+    if source["filesystem_uuid"] is None:
+        _source(Path(os.fsdecode(source["root_path_bytes"])))
     states = ["a.file_id IS NULL"]
     if inference:
-        states.append("a.status = 'extracted'")
+        if args.retry_triage:
+            states.append("a.status = 'extracted'")
+        else:
+            states.append("""a.status = 'extracted' AND
+                CASE WHEN json_valid(a.advice) THEN json_extract(a.advice, '$._triage_state')
+                     END IS NOT 'rejected'""")
     if args.retry_unavailable:
         states.append("a.status = 'unavailable'")
     rows = catalog.connection.execute(
-        _FIELDS + f" AND s.root_path_bytes = ? AND {KINDS[args.kind]}"
+        _FIELDS + f" AND f.source_id = ? AND {KINDS[args.kind]}"
         + " AND (" + " OR ".join(states) + ") ORDER BY f.id LIMIT ?",
-        (ANALYSIS_VERSION, source, args.limit),
+        (ANALYSIS_VERSION, source["id"], args.limit),
     ).fetchall()
 
     if not rows:
         print("No pending items in this source and file type.")
         return 3
-    complete = unavailable = 0
+    complete = unavailable = rejected = incomplete = unverified_links = 0
     for row in rows:
+        if link_row(catalog.connection, row) == "unverified":
+            unverified_links += 1
         try:
             evidence = extract(row, ocr_language=args.ocr_language, whisper_model=args.whisper_model)
         except (EvidenceUnavailable, OSError, ImportError) as error:
+            require_attached_source(source)
             if isinstance(error, EvidenceUnavailable):
                 reason = str(error)
             elif isinstance(error, ImportError):
@@ -99,21 +120,37 @@ def analyze_batch(catalog: Catalog, args: Namespace) -> int:
             if previous_scope and row["analysis_status"] == "extracted":
                 reason = f"{previous_scope}. Current read unavailable: {reason}"
             _save(catalog, row, status="unavailable", scope=reason,
-                  extracted=row["extracted_text"] or "")
+                  extracted=row["extracted_text"] or "",
+                  advice={"_coverage": {"text": "unavailable", "visual": False}})
             unavailable += 1
             continue
-        _save(catalog, row, status="extracted", scope=evidence.scope, extracted=evidence.text)
+        coverage = {"text": evidence.text_coverage, "visual": bool(evidence.image)}
+        if evidence.text_coverage == "unavailable":
+            incomplete += 1
+        _save(catalog, row, status="extracted", scope=evidence.scope, extracted=evidence.text,
+              advice={"_coverage": coverage})
         if inference:
             try:
                 advisory = archive_advisor.analyze(evidence, inference=inference)
-            except archive_advisor.AdviceUnavailable as error:
+            except AdviceRejected:
+                _save(catalog, row, status="extracted", scope=evidence.scope,
+                      extracted=evidence.text, advice={"_coverage": coverage, "_triage_state": "rejected"},
+                      model=f"{inference.provider}:{inference.model}")
+                rejected += 1
+                continue
+            except AdviceUnavailable as error:
                 print(f"{inference.provider} paused after {complete} items. Local evidence saved. {error}", file=sys.stderr)
                 return 2
             _save(catalog, row, status="advised", scope=evidence.scope, extracted=evidence.text,
-                  advice=advisory, model=f"{inference.provider}:{inference.model}")
+                  advice={**advisory, "_coverage": {
+                      **coverage, "model_text_truncated": len(evidence.text) > 16_000,
+                  }},
+                  model=f"{inference.provider}:{inference.model}")
         complete += 1
-    print(f"Batch complete: {complete} processed, {unavailable} unavailable.")
-    return int(unavailable != 0)
+    print(f"Batch complete: {complete} processed, {unavailable} unavailable, "
+          f"{incomplete} with unavailable text extraction, {rejected} rejected by the model, "
+          f"{unverified_links} with unverified derivative lineage.")
+    return int(bool(unavailable or rejected or incomplete or unverified_links))
 
 
 def compare_photos(catalog: Catalog, args: Namespace) -> int:
@@ -203,8 +240,7 @@ def archive_report(catalog: Catalog, args: Namespace) -> int:
         if output.suffix.lower() != ".html":
             raise ValueError("--output must be a new .html file.")
         body = "".join(cards) or "<p>No entries on this page.</p>"
-        with output.open("x", encoding="utf-8") as handle:
-            handle.write(f"""<!doctype html><html lang="en"><meta charset="utf-8">
+        html = f"""<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'">
 <title>Archive review</title><style>
@@ -213,39 +249,56 @@ article{{border-block-start:1px solid GrayText;overflow-wrap:anywhere}} pre{{whi
 dt{{font-weight:600}}summary{{cursor:pointer;min-height:2rem}}</style>
 <main><h1>Archive review</h1><p>{len(cards)} entries from offset {args.offset}.</p>
 <p>Extracted text is evidence from a bounded sample. Keep and filing proposals are advisory.</p>
-{body}</main></html>""")
+{body}</main></html>"""
+        _write(output, html.encode("utf-8"))
     return 0
 
 
 def workflow_script(args: Namespace) -> None:
-    source = os.fsdecode(_source(args.source))
     if not 1 <= args.batches <= 100:
         raise ValueError("Use 1 to 100 workflow batches.")
     mountpoint = args.mountpoint.expanduser().resolve() if args.mountpoint else None
-    if mountpoint and not Path(source).is_relative_to(mountpoint):
-        raise ValueError("The source must be inside the specified mountpoint.")
     catalog = str(args.catalog.expanduser().resolve())
     base = ["uv", "run", "photo-custodian"]
-    scan = [*base, "scan", "--catalog", catalog, "--", source]
-    analyze = [*base, "analyze", "--catalog", catalog, "--kind", args.kind, "--source=" + source]
+    analyze = [*base, "analyze", "--catalog", catalog, "--kind", args.kind]
+    report = [*base, "archive", "--catalog", catalog, "--output", str(args.output)]
+    if args.source_id is None:
+        source = os.fsdecode(_source(args.source))
+        if mountpoint and not Path(source).is_relative_to(mountpoint):
+            raise ValueError("The source must be inside the specified mountpoint.")
+        scan = [*base, "scan", "--catalog", catalog, "--", source]
+        analyze.append("--source=" + source)
+    else:
+        if mountpoint is None or not 1 <= args.source_id <= 2**63 - 1:
+            raise ValueError("A registered workflow requires a positive source ID and --mountpoint.")
+        locator = ["--source-id", str(args.source_id)]
+        scan = [*base, "source-scan", str(args.source_id), "--catalog", catalog,
+                "--mount", str(mountpoint)]
+        analyze.extend(locator)
+        output = args.output.expanduser().resolve()
+        report = [*base, "case-handoff", "--catalog", catalog, *locator, "--output", str(output)]
     if args.openai:
         analyze.append("--openai")
-    report = [*base, "archive", "--catalog", catalog, "--output", str(args.output)]
+    if args.ollama:
+        analyze.append("--ollama")
+    if args.model:
+        analyze.extend(["--model", args.model])
     print("#!/bin/sh")
     print("# Review this workflow and run it from the Photo Custodian project.")
     print("set -eu")
-    if mountpoint:
+    if mountpoint and args.source_id is None:
         print(shlex.join(["mountpoint", "-q", "--", str(mountpoint)]))
     print(shlex.join(scan))
     print("batch=0")
     print("status=0")
+    print("warnings=0")
     print(f'while [ "$batch" -lt {args.batches} ]; do')
-    if mountpoint:
+    if mountpoint and args.source_id is None:
         print("    " + shlex.join(["mountpoint", "-q", "--", str(mountpoint)]))
     print("    status=0")
     print("    " + shlex.join(analyze) + " || status=$?")
-    print('    case "$status" in 0|1) ;; *) break ;; esac')
+    print('    case "$status" in 0) ;; 1) warnings=1 ;; *) break ;; esac')
     print("    batch=$((batch + 1))")
     print("done")
     print(shlex.join(report))
-    print('case "$status" in 0|1|3) ;; *) exit "$status" ;; esac')
+    print('case "$status" in 0|1|3) exit "$warnings" ;; *) exit "$status" ;; esac')

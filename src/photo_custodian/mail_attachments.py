@@ -15,7 +15,7 @@ from email.parser import BytesParser
 from pathlib import Path
 from shutil import rmtree
 
-from .intake import _write, _write_json
+from .intake import _write, _write_json, verify_staged_file
 from .manifest_verify import file_fingerprint
 
 _MAX_MESSAGE = 64 * 1024 * 1024
@@ -95,6 +95,11 @@ def _stage(source: Path, output: Path) -> str:
             raise ValueError("Attachment receipt is invalid.")
         if record["source_fingerprint"] != list(file_fingerprint(source.lstat())):
             return "source_changed"
+        for derivative in record["working_derivatives"]:
+            name = derivative["working_filename"]
+            if not re.fullmatch(r"part-[0-9]{4}\.[a-z0-9]{1,10}", name):
+                raise ValueError("Attachment receipt contains an invalid staged name.")
+            verify_staged_file(final / name, derivative["bytes"], derivative["sha256"])
         return "already_partial" if record["unavailable"] else "already_staged"
 
     raw, fingerprint = _read_message(source)

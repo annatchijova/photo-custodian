@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import sqlite3
 import re
 import stat
 from dataclasses import dataclass
@@ -80,6 +82,51 @@ def _attach(mount: Path, uuid: str, relative: bytes) -> Attachment:
     if metadata.st_dev != mount_metadata.st_dev or metadata.st_dev != link_stat.st_rdev:
         raise ValueError("Source folder is on a different device.")
     return Attachment(root, entries[0][0], metadata.st_dev, metadata.st_ino)
+
+
+def list_sources(args) -> int:
+    path = args.catalog.expanduser().resolve(strict=True)
+    connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+    try:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("""
+            SELECT s.id AS source_id, s.status AS last_attachment_status, s.root_path,
+                   m.source_id IS NOT NULL AS registered,
+                   coalesce(r.status, 'not_scanned') AS latest_scan_status
+            FROM sources s LEFT JOIN registered_mounts m ON m.source_id = s.id
+            LEFT JOIN scan_runs r ON r.id = (
+                SELECT max(id) FROM scan_runs WHERE source_id = s.id
+            ) ORDER BY s.id
+        """)
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["registered"] = bool(item["registered"])
+            if not args.show_paths:
+                item.pop("root_path")
+            result.append(item)
+    finally:
+        connection.close()
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def require_attached_source(row: sqlite3.Row) -> None:
+    if row["filesystem_uuid"] is None:
+        return
+    if row["status"] != "active":
+        raise ValueError("Registered source is unavailable. Run source-scan after reconnecting.")
+    root = Path(os.fsdecode(row["root_path_bytes"]))
+    relative = bytes(row["folder_bytes"])
+    mount = root
+    for _ in _folder(relative):
+        mount = mount.parent
+    try:
+        attached = _attach(mount, row["filesystem_uuid"], relative)
+    except (OSError, ValueError):
+        raise ValueError("Registered source is unavailable. Run source-scan after reconnecting.") from None
+    if attached.root != root or attached.device != row["device"]:
+        raise ValueError("Registered source changed. Run source-scan to reattach it.")
 
 
 def register(catalog: Catalog, args) -> int:

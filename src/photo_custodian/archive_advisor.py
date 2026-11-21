@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from .advisor import AdviceUnavailable
+from .advisor import AdviceRejected
 from .inference import Inference
 from .archive_evidence import Evidence
 
@@ -31,7 +31,7 @@ def _structured(content: list[dict[str, str]], task: str, *, inference: Inferenc
 def _text(result: dict, key: str, length: int) -> str:
     value = result.get(key)
     if not isinstance(value, str) or len(value) > length:
-        raise AdviceUnavailable("OpenAI returned an invalid archive field.")
+        raise AdviceRejected("The model returned an invalid archive field.")
     return value
 
 
@@ -58,7 +58,7 @@ def analyze(evidence: Evidence, *, inference: Inference) -> dict:
     ), inference=inference)
     category = _text(result, "category", 80)
     if category not in CATEGORIES:
-        raise AdviceUnavailable("OpenAI returned an unknown archive category.")
+        raise AdviceRejected("The model returned an unknown archive category.")
     clean = {"category": category, "title": _text(result, "title", 200)}
     for name in ("summary", "saved_reason_hypothesis", "important_information", "suggested_rule",
                  "vision_transcription", "defense_lead", "complaint_lead"):
@@ -84,5 +84,5 @@ def compare(candidates: list[tuple[int, Evidence]], *, inference: Inference) -> 
         or any(type(item) is not int or item not in valid_ids for item in keep_ids)
         or len(set(keep_ids)) != len(keep_ids)
     ):
-        raise AdviceUnavailable("OpenAI returned photo IDs outside this comparison.")
+        raise AdviceRejected("The model returned photo IDs outside this comparison.")
     return {"keep_ids": keep_ids, "reason": _text(result, "reason", 1000)}

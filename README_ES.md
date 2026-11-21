@@ -104,6 +104,13 @@ reconectarla, aunque cambie la ruta. El escaneo mantiene abierta la raíz y
 agrupa las escrituras en una transacción. Si cambia el montaje, descarta ese
 escaneo y conserva las rutas catalogadas.
 
+Usá `sources` para consultar IDs y últimos estados registrados sin inspeccionar
+los dispositivos. `analyze --source-id ID` comprueba el montaje de una fuente
+registrada. `workflow --source-id ID --mountpoint MONTAJE --output REVISION.html`
+genera un script para escanear con esa comprobación, analizar por tandas y
+crear una entrega de solo referencias y cobertura. Agregá `--openai` o
+`--ollama --model MODELO` si querés incluir análisis por modelo.
+
 Este modo sirve para montajes completos de dispositivos de bloque en Linux
 cuyo UUID se pueda identificar en `/dev/disk/by-uuid`. Para celulares, otra
 compu o montajes incompatibles, el flujo de entrada usa una copia de trabajo
@@ -120,6 +127,8 @@ adjuntos compatibles por tandas reanudables. Cada registro privado vincula
 la parte MIME y su SHA-256 decodificado con el hash del EML de origen. El
 comando informa los correos inaccesibles o parciales. Escaneá la carpeta de
 trabajo para analizar los derivados y conservá aparte los EML.
+`verify-mail-intake --source CARPETA` comprueba los EML descargados contra
+sus registros locales, sin conexión a Gmail.
 
 `intake-whatsapp EXPORTACION --output CARPETA` prepara una copia de trabajo
 a partir de un ZIP o TXT exportado. El índice final vincula los archivos y
@@ -179,7 +188,24 @@ con las dos líneas propuestas y la cobertura del análisis. Usá una salida nue
 El HTML limita la cantidad de referencias visibles. Los dos formatos omiten
 medios, nombres, fragmentos y notas del modelo. Los IDs pertenecen al catálogo
 que generó la entrega. Una extracción incompleta o sin propuesta deja abierta
-la revisión humana.
+la revisión humana. El informe distingue muestras acotadas, texto recortado,
+extracción no disponible y cobertura desconocida. Si el modelo devuelve una
+respuesta inválida para un archivo, la cola registra el rechazo y sigue.
+`analyze --retry-triage` permite revisar esos casos de nuevo. Una falla de
+conexión o autenticación del proveedor pausa el lote.
+
+### Vincular adjuntos y transcripciones con su origen
+
+En carpetas de adjuntos y transcripciones ya catalogadas, el análisis coteja
+los bytes del derivado con su registro. `link-derivatives --source-id ID`
+completa los vínculos de archivos ya catalogados sin usar un modelo.
+`--retry-unverified` permite repetir verificaciones incompletas. La entrega
+JSON incluye la parte MIME o ventana transcripta, el hash del derivado y el
+hash del archivo padre declarado en el registro. Refleja el último cotejo
+guardado. `verify-lineage-parents MANIFIESTO --root RAIZ --expected-sha256
+DIGEST` coteja los bytes de una copia de trabajo y registra el resultado para
+la próxima entrega. La coincidencia se refiere al hash declarado y al momento
+de la lectura.
 
 ## Registrar un manifiesto de la copia de trabajo
 

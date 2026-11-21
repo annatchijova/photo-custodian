@@ -36,6 +36,7 @@ class Evidence:
     scope: str
     text: str = ""
     image: str = ""
+    text_coverage: str = "not_requested"
 
 
 def _capture(tool: str, arguments: list[str], *, limit: int, fd: int) -> bytes:
@@ -47,6 +48,7 @@ def _capture(tool: str, arguments: list[str], *, limit: int, fd: int) -> bytes:
     with subprocess.Popen(
         [executable, *arguments], pass_fds=(fd,), stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        env={"PATH": os.environ.get("PATH", os.defpath), "LANG": "C.UTF-8"},
     ) as process, selectors.DefaultSelector() as watcher:
         watcher.register(process.stdout, selectors.EVENT_READ)
         try:
@@ -84,7 +86,7 @@ def _email_text(source, size: int) -> Evidence:
             for name in ("Date", "From", "To", "Subject")
         )
         return Evidence("Decoded email headers and plain-text MIME excerpt; attachments remain embedded",
-                        (context + "\n\n" + content)[:MAX_TEXT_BYTES])
+                        (context + "\n\n" + content)[:MAX_TEXT_BYTES], text_coverage="bounded")
     except (ValueError, TypeError, LookupError, RecursionError):
         raise EvidenceUnavailable("Could not decode this MIME message.") from None
 
@@ -103,7 +105,8 @@ def _document_or_media(row, whisper_model: Path | None) -> Evidence:
             result = _email_text(source, before.st_size)
         elif extension == ".txt":
             result = Evidence("UTF-8 text excerpt from the catalogued file",
-                              source.read(MAX_TEXT_BYTES).decode("utf-8-sig", "replace"))
+                              source.read(MAX_TEXT_BYTES).decode("utf-8-sig", "replace"),
+                              text_coverage="bounded")
         elif extension in AUDIO_FORMATS or (extension in VIDEO_FORMATS and whisper_model):
             if whisper_model is None:
                 raise EvidenceUnavailable("Select local Whisper weights to transcribe audio.")
@@ -114,15 +117,16 @@ def _document_or_media(row, whisper_model: Path | None) -> Evidence:
                 raise EvidenceUnavailable(str(error)) from None
             result = Evidence(
                 f"Whisper transcript excerpt, first {SAMPLE_SECONDS} seconds at most; timestamps are offsets",
-                text,
+                text, text_coverage="bounded",
             )
         elif extension == ".pdf":
             if before.st_size > MAX_PDF_BYTES:
                 raise EvidenceUnavailable("PDF exceeds the extraction size limit.")
             data = _capture("pdftotext", ["-f", "1", "-l", str(PDF_PAGES),
-                            "-layout", locator, "-"], limit=MAX_TEXT_BYTES, fd=fd)
+                            "-layout", locator, "-"], limit=MAX_TEXT_BYTES + 1, fd=fd)
             result = Evidence(f"Text layer, first {PDF_PAGES} PDF pages, bounded excerpt",
-                              data.decode("utf-8", "replace").strip())
+                              data[:MAX_TEXT_BYTES].decode("utf-8", "replace").strip(),
+                              text_coverage="truncated" if len(data) > MAX_TEXT_BYTES else "bounded")
             if not result.text:
                 raise EvidenceUnavailable("No PDF text layer in the sampled pages.")
         else:
@@ -162,6 +166,7 @@ def extract(
     except (ValueError, OSError, SyntaxError, Image.DecompressionBombError):
         raise EvidenceUnavailable("Photo is unavailable, changed, or unsupported.") from None
     text = ""
+    text_coverage = "not_requested"
     scope = "Resized photo preview"
     if use_ocr:
         jpeg = base64.b64decode(preview.split(",", 1)[1])
@@ -172,9 +177,12 @@ def extract(
             try:
                 data = _capture("tesseract", [f"/proc/self/fd/{fd}", "stdout",
                                 "-l", ocr_language, "--psm", "11"],
-                                limit=MAX_TEXT_BYTES, fd=fd)
-                text = data.decode("utf-8", "replace").strip()
+                                limit=MAX_TEXT_BYTES + 1, fd=fd)
+                text = data[:MAX_TEXT_BYTES].decode("utf-8", "replace").strip()
+                text_coverage = ("truncated" if len(data) > MAX_TEXT_BYTES
+                                 else "bounded" if text else "empty")
                 scope += " and local OCR excerpt"
             except EvidenceUnavailable as error:
+                text_coverage = "unavailable"
                 scope += f"; OCR unavailable ({error})"
-    return Evidence(scope, text, preview)
+    return Evidence(scope, text, preview, text_coverage)

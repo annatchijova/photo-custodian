@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -16,6 +17,7 @@ from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
 from .advisor import _NoRedirect
+from .manifest_verify import file_fingerprint
 
 _GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me/"
 _ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
@@ -44,6 +46,50 @@ def _write(output: Path, data: bytes, *, replace: bool = False) -> None:
 
 def _write_json(path: Path, data: dict, *, replace: bool = False) -> None:
     _write(path, json.dumps(data, indent=2, ensure_ascii=True).encode(), replace=replace)
+
+
+def verify_staged_file(path: Path, size: int, digest: str) -> None:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    with os.fdopen(os.open(path, flags), "rb") as handle:
+        metadata = os.fstat(handle.fileno())
+        before = file_fingerprint(metadata)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != size:
+            raise ValueError("Staged file size or type does not match the receipt.")
+        actual = hashlib.file_digest(handle, "sha256").hexdigest()
+        if (actual != digest or file_fingerprint(os.fstat(handle.fileno())) != before
+                or file_fingerprint(path.lstat()) != before):
+            raise ValueError("Staged file bytes do not match the receipt.")
+
+
+def _verify_gmail_pair(output: Path, message_id: str) -> None:
+    metadata = output / f"{message_id}.gmail.json"
+    if metadata.is_symlink() or not metadata.is_file() or metadata.stat().st_size > 8192:
+        raise ValueError("Gmail receipt is missing or invalid.")
+    receipt = json.loads(metadata.read_text())
+    if not isinstance(receipt, dict) or receipt.get("schema_version") != 1 or receipt.get("message_id") != message_id:
+        raise ValueError("Gmail receipt does not match its message ID.")
+    verify_staged_file(output / f"{message_id}.eml", receipt["size_bytes"], receipt["raw_sha256"])
+
+
+def verify_mail_intake(args) -> int:
+    root = args.source.expanduser()
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("Use a Gmail download directory.")
+    ids = set()
+    for path in root.iterdir():
+        for suffix in (".eml", ".gmail.json"):
+            if path.name.endswith(suffix):
+                value = path.name.removesuffix(suffix)
+                if _ID.fullmatch(value):
+                    ids.add(value)
+    unmatched = 0
+    for message_id in sorted(ids):
+        try:
+            _verify_gmail_pair(root, message_id)
+        except (OSError, ValueError, KeyError, TypeError):
+            unmatched += 1
+    print(json.dumps({"checked": len(ids), "match": len(ids) - unmatched, "unmatched": unmatched}))
+    return int(not ids or bool(unmatched))
 
 
 def _gmail_get(opener, token: str, path: str) -> dict:
@@ -112,6 +158,10 @@ def gmail(args) -> int:
             if os.path.lexists(file) and (file.is_symlink() or not file.is_file()):
                 raise ValueError("A Gmail message output path is unavailable.")
             if file.is_file() and metadata.is_file() and not metadata.is_symlink():
+                try:
+                    _verify_gmail_pair(output, message_id)
+                except (OSError, ValueError, KeyError, TypeError):
+                    raise ValueError("A staged Gmail message failed receipt verification.") from None
                 continue
             data = _gmail_get(opener, token, f"messages/{message_id}?format=raw")
             try:
