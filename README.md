@@ -58,7 +58,7 @@ The first report reads media bytes. Subsequent runs reuse exact hashes and
 versioned photo signatures where available. Use `--offset 25` with the default
 limit to see the next set of groups, and use a fresh output filename. Report
 warnings include skipped photos and incomplete analysis. An HTML report is a
-review artifact that contains local paths and embedded photo previews.
+review artifact that contains local paths. Add `--show-previews` to embed photo previews.
 
 ## Build a searchable content archive
 
@@ -107,6 +107,121 @@ drive, add `--mountpoint /path/to/mount` to guard the generated run against
 an unmounted drive. Adding `--openai` includes hosted analysis in that script.
 Set `--batches` to process multiple batches in one run. Scripts are generated
 from fixed commands and user arguments.
+
+## Register a removable Linux source
+
+`source-register --uuid UUID --mount MOUNT --folder SUBDIRECTORY` binds a
+catalog source ID to a filesystem UUID and relative folder. `source-scan ID
+--mount MOUNT` scans the same source after a reconnect, including when the
+mountpoint changes. The scanner pins the root directory during traversal
+and stages rows in one transaction. If the attachment changes, the scan is
+discarded and previously catalogued paths are retained.
+
+This option supports full Linux block-device mounts that expose the UUID
+mapping under `/dev/disk/by-uuid`. Layouts that cannot be verified use the
+existing working-copy intake. For phones or another computer, catalog an
+exported working copy from the local filesystem.
+
+## Intake Gmail and WhatsApp for private review
+
+`intake-gmail --query QUERY --output DIRECTORY` downloads a Gmail selection
+as raw EML and records message IDs and byte digests. Set `GMAIL_ACCESS_TOKEN`
+using an OAuth token restricted to Gmail read-only access. Repeat the same
+account, query and output directory to resume paging. Attachments remain
+embedded in the original MIME messages. `stage-mail-attachments --source DIRECTORY
+--output WORKING_DIRECTORY` extracts compatible attachments in resumable batches.
+Each private receipt ties a MIME part and its decoded SHA-256 to the source EML
+digest. The batch reports unavailable and partial messages. Scan the completed
+working directory to analyze derivatives. Keep the EML folder separately.
+
+`intake-whatsapp EXPORT --output DIRECTORY` stages a user-supplied ZIP or
+TXT export. Its completed index links staged files and chat fragments to
+the source. Keep the original export. Scan the staged directory to analyze
+the copies. Large chats are split into bounded searchable text fragments.
+
+`analyze --whisper-model /path/to/model.pt` enables transcription with an
+installed local Whisper CLI and FFmpeg. It uses a sample of up to the first
+ten minutes of each supported audio or video item. Transcript timestamps
+are offsets within the media. Use `--retry-unavailable` to revisit failures
+after installing tools. Email analysis extracts plain-text MIME content.
+The agent can also estimate text from screenshot pixels with a vision model.
+For longer recordings, use `stage-transcripts --source-id ID --whisper-model
+/path/to/model.pt --output WORKING_DIRECTORY`. This resumable queue splits
+the declared container duration into five-minute windows. Each receipt links
+the transcript and decoded frame count to the source and model hashes. Scan
+the staging directory to search transcript text. Timestamps are relative
+to the decoded window. A short or silent window is recorded separately.
+
+`archive --case-lane defense` and `archive --case-lane complaint` list
+independent model-generated leads. One artifact can appear in both.
+The default archive output omits excerpts and model notes.
+
+## Locate evidence without opening media
+
+```bash
+uv run photo-custodian ask "remembered phrase"
+```
+
+The command searches recorded OCR and PDF text and returns file and source IDs,
+extraction scope, excerpt offsets and a SHA-256 digest of the extracted text.
+The output omits excerpts, file paths and media by default. The digest describes
+the extracted text in the catalog. It does not authenticate the original file.
+The reported modification timestamp comes from the catalog. Use
+`archive --file-id ID` to locate a match. Add `--show-content` to include text
+and model suggestions in an archive export.
+
+For optional interpretation, use `ask "remembered phrase" --show-content
+--openai`, or select `--ollama --model MODEL` instead. The provider receives the
+question and selected text excerpts. The response cites reference IDs for this
+query. A citation identifies the supplied excerpt and does not establish that
+every model claim follows from it. A provider failure preserves local matches.
+
+`analyze` and `compare` also accept `--ollama --model MODEL`. For images, select a
+compatible vision model. For sensitive work, use an installed local model with
+the running Ollama server's cloud features disabled (`OLLAMA_NO_CLOUD=1` or
+`disable_ollama_cloud` in the server settings). The adapter uses
+`127.0.0.1:11434` and has no automatic provider fallback.
+
+## Export review leads without opening source material
+
+`case-handoff --output handoff.html` produces a private, offline summary of
+the two advisory review lanes and the coverage gaps. Use a new `.json` output
+for the full machine-readable catalog index, or `--source-id ID` to limit scope.
+The browser version caps the visible lead list. Both formats omit media,
+filenames, excerpts and free-text model notes. IDs refer to this catalog.
+An absent lead or incomplete extraction leaves human review open.
+
+## Record a working-copy byte manifest
+
+Select catalog IDs from one working-copy source. Write the manifest to an
+existing local directory outside that source. The command re-reads the files,
+records each SHA-256 and refuses to publish if a selected file changed or
+became unavailable.
+
+```bash
+uv run photo-custodian manifest 12 13 --output /path/to/records/selection.json
+uv run photo-custodian verify-manifest /path/to/records/selection.json --root /path/to/working-copy
+```
+
+The verifier compares bytes at the same relative paths under the supplied
+root. Keep the printed payload digest independently and provide it with
+`--expected-sha256` to check against that reference. The manifest contains
+relative filenames encoded as base64 and should be handled as private
+material. It records a working-copy observation, with software timestamps
+outside the sealed payload. Acquisition and custody are separate processes.
+
+## Prepare Fracture intake
+
+`fracture-plan MANIFEST --expected-sha256 DIGEST --case-id CASE-ID --output PLAN.json`
+associates an opaque case ID with an independently anchored working-copy manifest.
+Its private output lists file IDs and byte digests. Fracture's single-file
+routing rules supply candidate parsers for certain file types. Other files
+remain available for examiner mapping. The same manifest can support separate
+case plans. Verify the working copy before any subsequent examination.
+
+The plan is a reference index. It supplies no scores or expected verdicts to
+Fracture. Mobile acquisitions and ordinary archive exports have different
+coverage. See the [integration decision](docs/decisions/0010-fracture-intake.md).
 
 ## Get one next step
 

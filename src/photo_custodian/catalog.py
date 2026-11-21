@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-CATALOG_SCHEMA_VERSION = 4
+CATALOG_SCHEMA_VERSION = 5
 
 
 SCHEMA_V1 = """
@@ -125,6 +125,16 @@ CREATE TABLE archive_analysis (
 """
 
 
+REGISTERED_MOUNTS_TABLE_V5 = """
+CREATE TABLE registered_mounts (
+    source_id INTEGER PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+    filesystem_uuid TEXT NOT NULL,
+    folder_bytes BLOB NOT NULL,
+    UNIQUE (filesystem_uuid, folder_bytes)
+)
+"""
+
+
 class Catalog:
     """Versioned SQLite catalog for read-only source inventory."""
 
@@ -177,6 +187,7 @@ class Catalog:
                 self.connection.execute(PHOTO_SIGNATURES_TABLE_V3)
                 self.connection.execute(PHOTO_CATEGORIES_TABLE_V3)
                 self.connection.execute(ARCHIVE_ANALYSIS_TABLE_V4)
+                self.connection.execute(REGISTERED_MOUNTS_TABLE_V5)
                 self.connection.execute(
                     "INSERT INTO schema_metadata(singleton, schema_version) VALUES (1, ?)",
                     (CATALOG_SCHEMA_VERSION,),
@@ -203,6 +214,10 @@ class Catalog:
             if stored_version == 3:
                 self._migrate_v3_to_v4()
                 stored_version = 4
+                continue
+            if stored_version == 4:
+                self._migrate_v4_to_v5()
+                stored_version = 5
                 continue
             self.connection.close()
             raise RuntimeError(
@@ -254,9 +269,24 @@ class Catalog:
         else:
             self.connection.commit()
 
+    def _migrate_v4_to_v5(self) -> None:
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            self.connection.execute(REGISTERED_MOUNTS_TABLE_V5)
+            self.connection.execute(
+                "UPDATE schema_metadata SET schema_version = 5 WHERE singleton = 1"
+            )
+            self.connection.execute("PRAGMA user_version = 5")
+
     def ensure_source(self, root: Path) -> int:
         root_bytes = os.fsencode(root)
         root_display = root_bytes.decode("utf-8", errors="backslashreplace")
+        registered = self.connection.execute("""
+            SELECT s.id FROM sources s JOIN registered_mounts m ON m.source_id = s.id
+            WHERE s.root_path_bytes = ?
+        """, (root_bytes,)).fetchone()
+        if registered is not None:
+            raise ValueError(f"Source {registered[0]} is registered. Use source-scan.")
         stat_result = root.stat()
         self.connection.execute(
             """
@@ -276,11 +306,12 @@ class Catalog:
             raise RuntimeError(f"failed to create catalog source for {root_display}")
         return int(row[0])
 
-    def begin_scan(self, source_id: int) -> int:
+    def begin_scan(self, source_id: int, *, commit: bool = True) -> int:
         cursor = self.connection.execute(
             "INSERT INTO scan_runs(source_id) VALUES (?)", (source_id,)
         )
-        self.connection.commit()
+        if commit:
+            self.connection.commit()
         return int(cursor.lastrowid)
 
     def record_file(

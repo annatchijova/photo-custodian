@@ -51,7 +51,7 @@ uv run photo-custodian report --output revision-01.html
 El primer informe lee los archivos. Las ejecuciones siguientes reutilizan hashes
 y firmas visuales cuando corresponde. Usá `--offset 25` para pasar a la siguiente
 tanda con el límite predeterminado y elegí otro nombre de salida. El archivo HTML
-incluye rutas y miniaturas locales.
+incluye rutas locales. Agregá `--show-previews` para incluir miniaturas.
 
 ## Crear un archivo consultable
 
@@ -94,6 +94,126 @@ genera un script revisable de escaneo, análisis y reporte. Con un disco externo
 `--mountpoint /ruta/al/montaje` agrega una comprobación de montaje.
 `--batches` permite procesar varias tandas en una ejecución. Agregá
 `--openai` para incluir el análisis remoto en el script.
+
+## Registrar un disco externo en Linux
+
+`source-register --uuid UUID --mount MONTAJE --folder SUBCARPETA` vincula un
+ID del catálogo con el UUID del sistema de archivos y una carpeta relativa.
+`source-scan ID --mount MONTAJE` permite retomar la misma fuente al
+reconectarla, aunque cambie la ruta. El escaneo mantiene abierta la raíz y
+agrupa las escrituras en una transacción. Si cambia el montaje, descarta ese
+escaneo y conserva las rutas catalogadas.
+
+Este modo sirve para montajes completos de dispositivos de bloque en Linux
+cuyo UUID se pueda identificar en `/dev/disk/by-uuid`. Para celulares, otra
+compu o montajes incompatibles, el flujo de entrada usa una copia de trabajo
+exportada y accesible desde el sistema de archivos local.
+
+## Incorporar Gmail y WhatsApp para revisión privada
+
+`intake-gmail --query CONSULTA --output CARPETA` descarga una selección de
+Gmail como EML crudo y registra IDs y hashes. Configurá `GMAIL_ACCESS_TOKEN`
+con un token OAuth limitado a lectura de Gmail. Repetí la cuenta, consulta y
+carpeta para retomar la descarga. Los adjuntos quedan dentro del MIME original.
+`stage-mail-attachments --source CARPETA --output COPIA_DE_TRABAJO` extrae los
+adjuntos compatibles por tandas reanudables. Cada registro privado vincula
+la parte MIME y su SHA-256 decodificado con el hash del EML de origen. El
+comando informa los correos inaccesibles o parciales. Escaneá la carpeta de
+trabajo para analizar los derivados y conservá aparte los EML.
+
+`intake-whatsapp EXPORTACION --output CARPETA` prepara una copia de trabajo
+a partir de un ZIP o TXT exportado. El índice final vincula los archivos y
+fragmentos con su fuente. Conservá el export original. Escaneá la carpeta
+preparada para analizar las copias. Los chats largos se dividen en fragmentos
+buscables de tamaño acotado.
+
+`analyze --whisper-model /ruta/modelo.pt` habilita transcripción con Whisper
+local y FFmpeg ya instalados. Procesa hasta los primeros diez minutos de cada
+audio o video compatible. Las marcas de tiempo son posiciones dentro del
+medio. Usá `--retry-unavailable` para retomar fallas tras instalar herramientas.
+En correo se extrae el cuerpo MIME de texto plano. Con un modelo visual, el
+agente también puede estimar texto directamente desde una captura.
+
+Para grabaciones largas, `stage-transcripts --source-id ID --whisper-model
+/ruta/modelo.pt --output COPIA_DE_TRABAJO` transcribe por ventanas de cinco
+minutos sobre la duración declarada del archivo. La cola se puede retomar.
+Cada registro vincula la transcripción y las muestras decodificadas con los
+hashes de la fuente y del modelo. Escaneá la carpeta de trabajo para buscar
+en las transcripciones. Los tiempos son relativos a cada ventana decodificada.
+Los tramos cortos o sin habla quedan identificados.
+
+`archive --case-lane defense` y `archive --case-lane complaint` filtran
+hallazgos propuestos por el modelo. Un archivo puede aparecer en ambos.
+La salida predeterminada omite fragmentos y notas del modelo.
+
+## Localizar evidencia sin abrir archivos
+
+```bash
+uv run photo-custodian ask "frase que recordás"
+```
+
+El comando busca en el OCR y el texto PDF guardados. Devuelve IDs de archivo y
+fuente, el alcance de la extracción, las posiciones del fragmento y un SHA-256
+del texto extraído. La salida predeterminada omite fragmentos, rutas e imágenes.
+El hash identifica el texto guardado en el catálogo. La fecha de modificación
+también proviene del catálogo. Usá `archive --file-id ID` para ubicar el
+archivo y agregá `--show-content` para incluir texto y sugerencias en la salida.
+
+Para solicitar una interpretación, usá `ask "frase que recordás" --show-content
+--openai` o elegí `--ollama --model MODELO`. El proveedor recibe la pregunta y
+fragmentos seleccionados. La respuesta cita los IDs de esa consulta. Una cita
+permite ubicar el fragmento que recibió el modelo. Si el proveedor falla, las
+coincidencias locales siguen disponibles.
+
+`analyze` y `compare` también aceptan `--ollama --model MODELO`. Para imágenes,
+elegí un modelo visual compatible. Con material sensible, usá un modelo local
+ya instalado y deshabilitá la nube en el servidor de Ollama
+(`OLLAMA_NO_CLOUD=1` o `disable_ollama_cloud` en su configuración).
+El adaptador se conecta a `127.0.0.1:11434` y mantiene el proveedor elegido.
+
+## Preparar una entrega sin abrir el material
+
+`case-handoff --output entrega.html` genera un resumen privado y sin conexión
+con las dos líneas propuestas y la cobertura del análisis. Usá una salida nueva
+`.json` para el índice completo o `--source-id ID` para acotar las fuentes.
+El HTML limita la cantidad de referencias visibles. Los dos formatos omiten
+medios, nombres, fragmentos y notas del modelo. Los IDs pertenecen al catálogo
+que generó la entrega. Una extracción incompleta o sin propuesta deja abierta
+la revisión humana.
+
+## Registrar un manifiesto de la copia de trabajo
+
+Seleccioná IDs del catálogo que pertenezcan a una misma copia de trabajo.
+Guardá el manifiesto en un directorio local existente fuera de esa fuente.
+El comando vuelve a leer cada archivo, registra su SHA-256 y cancela la
+publicación si algún archivo seleccionado cambió o está inaccesible.
+
+```bash
+uv run photo-custodian manifest 12 13 --output /ruta/a/registros/seleccion.json
+uv run photo-custodian verify-manifest /ruta/a/registros/seleccion.json --root /ruta/a/copia-de-trabajo
+```
+
+El verificador compara los bytes en las mismas rutas relativas bajo la raíz
+indicada. Guardá el digest impreso por separado y pasalo con
+`--expected-sha256` para comprobarlo contra esa referencia. El manifiesto
+contiene nombres relativos codificados en base64 y se maneja como material
+privado. Registra una observación sobre la copia de trabajo. Las fechas del
+programa quedan fuera del contenido sellado. La adquisición y la custodia
+son procesos separados.
+
+## Preparar el ingreso a Fracture
+
+`fracture-plan MANIFIESTO --expected-sha256 DIGEST --case-id ID --output PLAN.json`
+asocia un identificador opaco de causa con un manifiesto de copia de trabajo
+cuyo digest se conservó por separado. El plan privado lista IDs y hashes.
+Algunos formatos reciben una sugerencia de parser según cómo Fracture enruta
+archivos individuales. Los demás quedan disponibles para que se determine su
+tratamiento. Un mismo manifiesto puede respaldar planes de causas distintas.
+Verificá la copia de trabajo antes de cualquier examen posterior.
+
+El plan sirve como índice de referencias. Los puntajes y el veredicto quedan
+en el flujo de Fracture. Las exportaciones corrientes y las adquisiciones
+móviles tienen coberturas distintas. [Decisión técnica](docs/decisions/0010-fracture-intake.md)
 
 ## Obtener un próximo paso
 

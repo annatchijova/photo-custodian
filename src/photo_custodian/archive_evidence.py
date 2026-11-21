@@ -11,10 +11,14 @@ import stat
 import subprocess
 import time
 from dataclasses import dataclass
+from email import policy
+from email.parser import BytesParser
+from pathlib import Path
 from tempfile import TemporaryFile
 
 from .exact_duplicates import _catalog_fingerprint, _full_path_bytes, _stat_fingerprint
 from .visual_review import read_photo
+from .transcription import AUDIO_FORMATS, SAMPLE_SECONDS, transcribe
 
 MAX_TEXT_BYTES = 32_768
 MAX_VIDEO_FRAME = 512_000
@@ -66,7 +70,26 @@ def _capture(tool: str, arguments: list[str], *, limit: int, fd: int) -> bytes:
                 process.kill()
 
 
-def _pdf_or_video(row) -> Evidence:
+def _email_text(source, size: int) -> Evidence:
+    if size > 48 * 1024 * 1024:
+        raise EvidenceUnavailable("Email exceeds MIME extraction limits.")
+    try:
+        message = BytesParser(policy=policy.default).parse(source)
+        body = message.get_body(preferencelist=("plain",))
+        if body is None:
+            raise EvidenceUnavailable("Email has no supported plain-text body.")
+        content = body.get_content()
+        context = "\n".join(
+            f"{name}: {str(message.get(name, ''))[:500]}"
+            for name in ("Date", "From", "To", "Subject")
+        )
+        return Evidence("Decoded email headers and plain-text MIME excerpt; attachments remain embedded",
+                        (context + "\n\n" + content)[:MAX_TEXT_BYTES])
+    except (ValueError, TypeError, LookupError, RecursionError):
+        raise EvidenceUnavailable("Could not decode this MIME message.") from None
+
+
+def _document_or_media(row, whisper_model: Path | None) -> Evidence:
     path = _full_path_bytes(row)
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
     with os.fdopen(os.open(path, flags), "rb") as source:
@@ -76,7 +99,24 @@ def _pdf_or_video(row) -> Evidence:
             raise EvidenceUnavailable("File changed since inventory.")
         locator = f"/proc/self/fd/{fd}"
         extension = row["extension"]
-        if extension == ".pdf":
+        if extension == ".eml":
+            result = _email_text(source, before.st_size)
+        elif extension == ".txt":
+            result = Evidence("UTF-8 text excerpt from the catalogued file",
+                              source.read(MAX_TEXT_BYTES).decode("utf-8-sig", "replace"))
+        elif extension in AUDIO_FORMATS or (extension in VIDEO_FORMATS and whisper_model):
+            if whisper_model is None:
+                raise EvidenceUnavailable("Select local Whisper weights to transcribe audio.")
+            try:
+                text = transcribe(fd, (AUDIO_FORMATS | VIDEO_FORMATS)[extension],
+                                  whisper_model, max_bytes=MAX_TEXT_BYTES)
+            except (ValueError, OSError) as error:
+                raise EvidenceUnavailable(str(error)) from None
+            result = Evidence(
+                f"Whisper transcript excerpt, first {SAMPLE_SECONDS} seconds at most; timestamps are offsets",
+                text,
+            )
+        elif extension == ".pdf":
             if before.st_size > MAX_PDF_BYTES:
                 raise EvidenceUnavailable("PDF exceeds the extraction size limit.")
             data = _capture("pdftotext", ["-f", "1", "-l", str(PDF_PAGES),
@@ -106,9 +146,11 @@ def _pdf_or_video(row) -> Evidence:
     return result
 
 
-def extract(row, *, ocr_language: str = "eng+spa", use_ocr: bool = True) -> Evidence:
+def extract(
+    row, *, ocr_language: str = "eng+spa", use_ocr: bool = True, whisper_model: Path | None = None
+) -> Evidence:
     if row["media_kind"] != "image":
-        return _pdf_or_video(row)
+        return _document_or_media(row, whisper_model)
 
     try:
         from PIL import Image

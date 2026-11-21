@@ -187,14 +187,14 @@ def write_report(catalog: Catalog, args: Namespace) -> int:
         _group(f"exact-{group.sha256}", f"{group.file_count} identical paths · "
                f"{group.reclaimable_bytes:,} potentially recoverable bytes",
                [(item.file_id, item.path, f"{group.size_bytes:,} bytes") for item in group.files],
-               rows, omitted=group.files_truncated)
+               rows if args.show_previews else {}, omitted=group.files_truncated)
         for group in exact.groups
     ]
     visual_cards = [
         _group(f"visual-{group[0].file_id}", f"{len(group)} visually similar photos",
                [(photo.file_id, photo.path, f"{photo.width} × {photo.height} · {photo.size:,} bytes")
                 for photo in sorted(group, key=lambda photo: (-photo.width * photo.height, photo.file_id))],
-               rows)
+               rows if args.show_previews else {})
         for group in versions[args.offset:end]
     ]
     catalog.flush()
@@ -260,7 +260,7 @@ Skipped {skipped:,} unreadable, unsupported, changed, or low-detail photos.
 Collapsed {len(aliases):,} byte-identical paths.
 {'Comparison limit reached. Increase --comparison-budget to analyze more photos.' if capped else ''}
 Showing {len(visual_cards)} of {len(versions)} groups after skipping {args.offset}.
-Up to {MAX_PREVIEWS_PER_GROUP} previews per group.</p>
+{f"Up to {MAX_PREVIEWS_PER_GROUP} previews per group." if args.show_previews else "Photo previews omitted."}</p>
 {''.join(visual_cards) or '<p>No visual groups on this page.</p>'}
 </section>
 <section id="categories"><h2>Suggested categories</h2>

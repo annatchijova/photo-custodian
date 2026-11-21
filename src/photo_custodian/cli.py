@@ -24,6 +24,13 @@ def default_catalog_path() -> Path:
     return data_home / "photo-custodian" / "catalog.sqlite3"
 
 
+def _add_inference_options(parser: argparse.ArgumentParser) -> None:
+    provider = parser.add_mutually_exclusive_group()
+    provider.add_argument("--openai", action="store_true", help="send selected content to OpenAI")
+    provider.add_argument("--ollama", action="store_true", help="send selected content to loopback Ollama")
+    parser.add_argument("--model", help="model name for the selected provider")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="photo-custodian",
@@ -36,6 +43,18 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("roots", nargs="+", type=Path)
     scan_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
     scan_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    register_parser = subparsers.add_parser("source-register", help="register a mounted filesystem by UUID")
+    register_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
+    register_parser.add_argument("--uuid", required=True)
+    register_parser.add_argument("--mount", type=Path, required=True)
+    register_parser.add_argument("--folder", default=".")
+
+    source_scan_parser = subparsers.add_parser("source-scan", help="scan a registered source at its current mount")
+    source_scan_parser.add_argument("source_id", type=int)
+    source_scan_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
+    source_scan_parser.add_argument("--mount", type=Path, required=True)
+    source_scan_parser.add_argument("--json", action="store_true", dest="as_json")
 
     inventory_parser = subparsers.add_parser(
         "inventory", help="summarize active files in the catalog"
@@ -62,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser = subparsers.add_parser("report", help="build a local HTML review report")
     report_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
     report_parser.add_argument("--output", type=Path, required=True)
+    report_parser.add_argument("--show-previews", action="store_true", help="embed photo previews")
     report_parser.add_argument("--limit", type=int, default=25, help="groups per section (1–100)")
     report_parser.add_argument("--offset", type=int, default=0, help="groups to skip per section")
     from .visual_review import DEFAULT_COMPARISONS
@@ -79,14 +99,18 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_parser.add_argument("--kind", choices=KINDS, default="all")
     analyze_parser.add_argument("--limit", type=int, default=100)
     analyze_parser.add_argument("--ocr-language", default="eng+spa")
+    analyze_parser.add_argument("--whisper-model", type=Path, help="installed local Whisper .pt weights")
     analyze_parser.add_argument("--retry-unavailable", action="store_true")
-    analyze_parser.add_argument("--openai", action="store_true", help="send bounded evidence to OpenAI")
-    analyze_parser.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"))
+    _add_inference_options(analyze_parser)
 
     archive_parser = subparsers.add_parser("archive", help="search extracted text and generate a review")
     archive_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
     archive_parser.add_argument("--query", default="")
+    archive_parser.add_argument("--file-id", type=int, help="locate one catalog file ID")
+    archive_parser.add_argument("--show-content", action="store_true", help="include text and model suggestions")
     archive_parser.add_argument("--category")
+    archive_parser.add_argument("--case-lane", choices=("defense", "complaint"),
+                                help="filter by one advisory evidence lead")
     archive_parser.add_argument("--limit", type=int, default=25)
     archive_parser.add_argument("--offset", type=int, default=0)
     archive_parser.add_argument("--output", type=Path, help="write a local HTML archive page")
@@ -94,8 +118,57 @@ def build_parser() -> argparse.ArgumentParser:
     compare_parser = subparsers.add_parser("compare", help="get an advisory keep proposal for 2–6 photos")
     compare_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
     compare_parser.add_argument("ids", nargs="+", type=int)
-    compare_parser.add_argument("--openai", action="store_true", help="send selected photo previews to OpenAI")
-    compare_parser.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"))
+    _add_inference_options(compare_parser)
+
+    ask_parser = subparsers.add_parser("ask", help="find catalogued evidence without opening media")
+    ask_parser.add_argument("terms", nargs="+", help="literal terms or quoted phrases")
+    ask_parser.add_argument("--question", default="", help="optional question for the selected model")
+    ask_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
+    ask_parser.add_argument("--limit", type=int, default=8)
+    ask_parser.add_argument("--show-content", action="store_true", help="show extracted text and model answer")
+    _add_inference_options(ask_parser)
+
+    gmail_parser = subparsers.add_parser("intake-gmail", help="download a Gmail selection as raw EML")
+    gmail_parser.add_argument("--query", required=True)
+    gmail_parser.add_argument("--output", type=Path, required=True)
+    gmail_parser.add_argument("--pages", type=int, default=4)
+
+    attachments_parser = subparsers.add_parser("stage-mail-attachments", help="stage EML attachments for local analysis")
+    attachments_parser.add_argument("--source", type=Path, required=True)
+    attachments_parser.add_argument("--output", type=Path, required=True)
+    attachments_parser.add_argument("--limit", type=int, default=100)
+
+    transcript_parser = subparsers.add_parser("stage-transcripts", help="stage resumable local transcript windows")
+    transcript_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
+    transcript_parser.add_argument("--source-id", type=int, required=True)
+    transcript_parser.add_argument("--whisper-model", type=Path, required=True)
+    transcript_parser.add_argument("--output", type=Path, required=True)
+    transcript_parser.add_argument("--limit", type=int, default=25)
+
+    whatsapp_parser = subparsers.add_parser("intake-whatsapp", help="stage a WhatsApp ZIP or TXT export")
+    whatsapp_parser.add_argument("export", type=Path)
+    whatsapp_parser.add_argument("--output", type=Path, required=True)
+
+    handoff_parser = subparsers.add_parser("case-handoff", help="export a metadata-only review handoff")
+    handoff_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
+    handoff_parser.add_argument("--source-id", type=int, action="append", help="limit to these catalog sources")
+    handoff_parser.add_argument("--output", type=Path, required=True, help="new HTML or JSON output")
+
+    manifest_parser = subparsers.add_parser("manifest", help="record selected working-copy file bytes")
+    manifest_parser.add_argument("ids", nargs="+", type=int)
+    manifest_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
+    manifest_parser.add_argument("--output", type=Path, required=True)
+
+    verify_parser = subparsers.add_parser("verify-manifest", help="compare a working copy with a byte manifest")
+    verify_parser.add_argument("manifest", type=Path)
+    verify_parser.add_argument("--root", type=Path, required=True)
+    verify_parser.add_argument("--expected-sha256", help="payload digest retained independently")
+
+    fracture_parser = subparsers.add_parser("fracture-plan", help="plan intake from an anchored byte manifest")
+    fracture_parser.add_argument("manifest", type=Path)
+    fracture_parser.add_argument("--expected-sha256", required=True)
+    fracture_parser.add_argument("--case-id", required=True, help="opaque case reference")
+    fracture_parser.add_argument("--output", type=Path, required=True)
 
     workflow_parser = subparsers.add_parser("workflow", help="print a reviewable archive workflow script")
     workflow_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
@@ -201,12 +274,48 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if arguments.command == "agent":
             return _print_advice(arguments)
+        if arguments.command == "stage-transcripts":
+            from .transcript_queue import stage_transcripts
+
+            return stage_transcripts(arguments)
+        if arguments.command == "stage-mail-attachments":
+            from .mail_attachments import stage_attachments
+
+            return stage_attachments(arguments)
+        if arguments.command in ("intake-gmail", "intake-whatsapp"):
+            from .intake import gmail, whatsapp
+
+            return (gmail if arguments.command == "intake-gmail" else whatsapp)(arguments)
+        if arguments.command == "case-handoff":
+            from .case_handoff import handoff
+
+            return handoff(arguments)
+        if arguments.command == "manifest":
+            from .evidence_manifest import export
+
+            return export(arguments)
+        if arguments.command == "fracture-plan":
+            from .fracture_handoff import plan
+
+            return plan(arguments)
+        if arguments.command == "verify-manifest":
+            from .manifest_verify import verify
+
+            return verify(arguments)
+        if arguments.command == "ask":
+            from .grounded_search import ask
+
+            return ask(arguments)
         if arguments.command == "workflow":
             from .archive import workflow_script
 
             workflow_script(arguments)
             return 0
         with Catalog(arguments.catalog) as catalog:
+            if arguments.command in ("source-register", "source-scan"):
+                from .registered_sources import register, scan
+
+                return (register if arguments.command == "source-register" else scan)(catalog, arguments)
             if arguments.command in ("analyze", "archive", "compare"):
                 from .archive import analyze_batch, archive_report, compare_photos
 

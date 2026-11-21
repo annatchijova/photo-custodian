@@ -14,13 +14,17 @@ from pathlib import Path
 from . import archive_advisor
 from .archive_evidence import EvidenceUnavailable, extract
 from .catalog import Catalog
+from .inference import select_inference
 
 ANALYSIS_VERSION = 1
 KINDS = {
-    "all": "(f.media_kind IN ('image', 'video') OR f.extension = '.pdf')",
+    "all": "(f.media_kind IN ('image', 'video') OR f.extension IN "
+           "('.pdf', '.txt', '.eml', '.mp3', '.m4a', '.aac', '.wav', '.ogg', '.opus', '.flac', '.amr'))",
     "image": "f.media_kind = 'image'",
     "video": "f.media_kind = 'video'",
     "pdf": "f.extension = '.pdf'",
+    "text": "f.extension IN ('.txt', '.eml')",
+    "audio": "f.extension IN ('.mp3', '.m4a', '.aac', '.wav', '.ogg', '.opus', '.flac', '.amr')",
 }
 _FIELDS = """
 SELECT f.*, f.id AS file_id, s.root_path_bytes, s.root_path,
@@ -31,13 +35,6 @@ LEFT JOIN archive_analysis a ON a.file_id = f.id AND a.version = ?
   AND a.fingerprint = json_array(f.size_bytes, f.mtime_ns, f.ctime_ns, f.device, f.inode)
 WHERE f.status = 'active'
 """
-
-
-def _key() -> str:
-    value = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not value:
-        raise ValueError("Set OPENAI_API_KEY to enable OpenAI content analysis.")
-    return value
 
 
 def _source(source: Path) -> bytes:
@@ -68,13 +65,13 @@ def analyze_batch(catalog: Catalog, args: Namespace) -> int:
         raise ValueError("Use a batch limit from 1 to 100.")
     if args.ocr_language not in ("eng", "spa", "eng+spa"):
         raise ValueError("Use eng, spa or eng+spa for OCR.")
-    key = _key() if args.openai else ""
+    inference = select_inference(args)
     if catalog.connection.execute(
         "SELECT 1 FROM sources WHERE root_path_bytes = ?", (source,)
     ).fetchone() is None:
         raise ValueError("Scan this source first.")
     states = ["a.file_id IS NULL"]
-    if args.openai:
+    if inference:
         states.append("a.status = 'extracted'")
     if args.retry_unavailable:
         states.append("a.status = 'unavailable'")
@@ -90,7 +87,7 @@ def analyze_batch(catalog: Catalog, args: Namespace) -> int:
     complete = unavailable = 0
     for row in rows:
         try:
-            evidence = extract(row, ocr_language=args.ocr_language)
+            evidence = extract(row, ocr_language=args.ocr_language, whisper_model=args.whisper_model)
         except (EvidenceUnavailable, OSError, ImportError) as error:
             if isinstance(error, EvidenceUnavailable):
                 reason = str(error)
@@ -106,14 +103,14 @@ def analyze_batch(catalog: Catalog, args: Namespace) -> int:
             unavailable += 1
             continue
         _save(catalog, row, status="extracted", scope=evidence.scope, extracted=evidence.text)
-        if args.openai:
+        if inference:
             try:
-                advisory = archive_advisor.analyze(evidence, key=key, model=args.model)
+                advisory = archive_advisor.analyze(evidence, inference=inference)
             except archive_advisor.AdviceUnavailable as error:
-                print(f"OpenAI paused after {complete} items. Local evidence saved. {error}", file=sys.stderr)
+                print(f"{inference.provider} paused after {complete} items. Local evidence saved. {error}", file=sys.stderr)
                 return 2
             _save(catalog, row, status="advised", scope=evidence.scope, extracted=evidence.text,
-                  advice=advisory, model=args.model)
+                  advice=advisory, model=f"{inference.provider}:{inference.model}")
         complete += 1
     print(f"Batch complete: {complete} processed, {unavailable} unavailable.")
     return int(unavailable != 0)
@@ -121,9 +118,9 @@ def analyze_batch(catalog: Catalog, args: Namespace) -> int:
 
 def compare_photos(catalog: Catalog, args: Namespace) -> int:
     ids = list(dict.fromkeys(args.ids))
-    if not args.openai or not 2 <= len(ids) <= 6 or any(not 1 <= item <= 2**63 - 1 for item in ids):
-        raise ValueError("Use --openai with 2 to 6 distinct positive photo IDs from a review group.")
-    key = _key()
+    inference = select_inference(args)
+    if inference is None or not 2 <= len(ids) <= 6 or any(not 1 <= item <= 2**63 - 1 for item in ids):
+        raise ValueError("Select --openai or --ollama and 2 to 6 distinct positive photo IDs.")
     candidates = []
     for item in ids:
         row = catalog.connection.execute(
@@ -132,10 +129,10 @@ def compare_photos(catalog: Catalog, args: Namespace) -> int:
         if row is None:
             raise ValueError(f"Photo ID {item} is not active in this catalog.")
         candidates.append((item, extract(row, use_ocr=False)))
-    proposal = archive_advisor.compare(candidates, key=key, model=args.model)
+    proposal = archive_advisor.compare(candidates, inference=inference)
     print(json.dumps({
         "schema_version": 1, "purpose": "advisory-keep-proposal", "photos_reviewed": ids,
-        "model": args.model, **proposal,
+        "provider": inference.provider, "model": inference.model, **proposal,
     }, indent=2))
     return 0
 
@@ -153,6 +150,14 @@ def archive_report(catalog: Catalog, args: Namespace) -> int:
             OR instr(lower(coalesce(a.extracted_text, '')), lower(?)) > 0
             OR instr(lower(coalesce(a.advice, '')), lower(?)) > 0)"""
         parameters.extend([query] * 3)
+    if args.file_id is not None:
+        if not 1 <= args.file_id <= 2**63 - 1:
+            raise ValueError("--file-id must be a positive catalog ID.")
+        where += " AND f.id = ?"
+        parameters.append(args.file_id)
+    if args.case_lane:
+        where += " AND CASE WHEN json_valid(a.advice) THEN json_extract(a.advice, ?) END <> ''"
+        parameters.append(f"$.{args.case_lane}_lead")
     if args.category:
         where += " AND CASE WHEN json_valid(a.advice) THEN json_extract(a.advice, '$.category') END = ?"
         parameters.append(args.category)
@@ -164,27 +169,35 @@ def archive_report(catalog: Catalog, args: Namespace) -> int:
     for row in rows:
         if args.output is None:
             result = dict(row)
-            print(json.dumps({field: result[field] for field in (
-                "file_id", "root_path", "relative_path", "analysis_status", "scope",
-                "extracted_text", "advice", "model",
-            )}))
+            fields = ("file_id", "root_path", "relative_path", "analysis_status", "scope", "model")
+            if args.show_content:
+                fields += ("extracted_text", "advice")
+            print(json.dumps({field: result[field] for field in fields}))
             continue
-        advice = json.loads(row["advice"] or "{}")
+        advice = json.loads(row["advice"] or "{}") if args.show_content else {}
         pieces = []
         for field, label in (
             ("category", "Category"), ("title", "Proposed title"), ("summary", "Summary"),
             ("important_information", "Important information"),
             ("saved_reason_hypothesis", "Possible reason for saving"),
             ("suggested_rule", "Suggested filing rule"),
+            ("vision_transcription", "Text estimated by the vision model"),
+            ("defense_lead", "Possible lead for defense review"),
+            ("complaint_lead", "Possible lead for complaint review"),
         ):
             if advice.get(field):
                 pieces.append(f"<dt>{label}</dt><dd>{escape(advice[field])}</dd>")
         path = escape(str(Path(row["root_path"]) / row["relative_path"]))
-        raw = escape(row["extracted_text"] or "")
         scope = escape(row["scope"] or "Pending extraction")
+        details = ""
+        if args.show_content:
+            raw = escape(row["extracted_text"] or "")
+            details = (
+                f"<details><summary>Show extracted text and suggestions</summary>"
+                f"<dl>{''.join(pieces)}</dl><pre>{raw}</pre></details>"
+            )
         cards.append(f"<article><h2>ID {row['file_id']}</h2><p>{path}</p><p>{scope}</p>"
-                     f"<dl>{''.join(pieces)}</dl><details><summary>Extracted text</summary>"
-                     f"<pre>{raw}</pre></details></article>")
+                     f"{details}</article>")
     if args.output is not None:
         output = args.output.expanduser()
         if output.suffix.lower() != ".html":

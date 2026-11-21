@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .catalog import Catalog
 
@@ -86,10 +86,13 @@ def _scan_one_source(
     root: Path,
     summary: ScanSummary,
     *,
-    flush_every: int,
+    flush_every: int | None,
+    source_id: int | None = None,
+    final_check: Callable[[], bool] | None = None,
 ) -> None:
-    source_id = catalog.ensure_source(root)
-    scan_run_id = catalog.begin_scan(source_id)
+    if source_id is None:
+        source_id = catalog.ensure_source(root)
+    scan_run_id = catalog.begin_scan(source_id, commit=final_check is None)
     stack: list[str] = [os.fspath(root)]
     recorded_since_flush = 0
     source_errors = 0
@@ -145,17 +148,56 @@ def _scan_one_source(
                     summary.unchanged_files += 1
 
                 recorded_since_flush += 1
-                if recorded_since_flush >= flush_every:
+                if flush_every is not None and recorded_since_flush >= flush_every:
                     catalog.flush()
                     recorded_since_flush = 0
 
+    if final_check is not None and not final_check():
+        raise _AttachmentChanged
     if source_errors == 0:
         summary.missing_files += catalog.mark_missing(source_id, scan_run_id)
         terminal_status = "complete"
     else:
         terminal_status = "warning"
         summary.status = "warning"
+    if final_check is not None and not final_check():
+        raise _AttachmentChanged
     catalog.complete_scan(scan_run_id, terminal_status, summary.as_dict())
+
+
+class _AttachmentChanged(RuntimeError):
+    pass
+
+
+def scan_registered_source(
+    catalog: Catalog, source_id: int, root: Path, *, identity: tuple[int, int],
+    unchanged: Callable[[], bool],
+) -> ScanSummary:
+    """Stage inventory writes until the mounted source is rechecked."""
+    connection = catalog.connection
+    summary = ScanSummary(source_count=1)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(root, flags)
+    try:
+        observed = os.fstat(descriptor)
+        if (observed.st_dev, observed.st_ino) != identity or not unchanged():
+            raise _AttachmentChanged
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            root_bytes = os.fsencode(root)
+            connection.execute("""
+                UPDATE sources SET root_path_bytes = ?, root_path = ?, device = ?, status = 'active'
+                WHERE id = ?
+            """, (root_bytes, root_bytes.decode("utf-8", "backslashreplace"), identity[0], source_id))
+            _scan_one_source(catalog, Path(f"/proc/self/fd/{descriptor}"), summary,
+                             flush_every=None, source_id=source_id, final_check=unchanged)
+    except _AttachmentChanged:
+        with connection:
+            connection.execute("UPDATE sources SET status = 'unavailable' WHERE id = ?", (source_id,))
+        return ScanSummary(source_count=1, status="warning", error_count=1)
+    finally:
+        os.close(descriptor)
+    return summary
 
 
 def scan_sources(
