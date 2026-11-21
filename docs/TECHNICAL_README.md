@@ -251,3 +251,12 @@ those capabilities remain design-only.
 - Whether Czkawka is invoked as an external engine, integrated through Rust, or
   used only as a comparative baseline.
 - CLI/TUI framework and the minimum review interface for the first usable release.
+
+## License and redistribution
+
+Photo Custodian is licensed under the GNU General Public License v3.0 only
+(GPL-3.0-only). The complete license text is in [`LICENSE`](../LICENSE).
+Redistributed or modified versions must preserve the license notice and comply
+with the corresponding GPL-3.0 terms. Repository files are covered unless a
+file states a different license or an included third-party work retains its own
+terms.

@@ -441,5 +441,6 @@ comments, tests, documentation, and commit messages are written in English;
 
 ## License
 
-No license has been selected yet. Until one is added, the repository's contents
-remain under the copyright holder's default rights.
+Photo Custodian is licensed under the [GNU General Public License v3.0](LICENSE)
+(GPL-3.0-only). The license applies to the repository's software and
+accompanying documentation unless a file states otherwise.

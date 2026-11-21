@@ -428,5 +428,6 @@ commit se escriben en inglés; `README_ES.md` es la entrada mantenida en españo
 
 ## Licencia
 
-Todavía no se eligió una licencia. Hasta que se agregue una, el contenido del
-repositorio conserva los derechos predeterminados de su titular.
+Photo Custodian está licenciado bajo la [GNU General Public License v3.0](LICENSE)
+(GPL-3.0-only). La licencia se aplica al software y a la documentación del
+repositorio, salvo que un archivo indique lo contrario.
