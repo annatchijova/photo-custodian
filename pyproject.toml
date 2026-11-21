@@ -7,6 +7,9 @@ requires-python = ">=3.11"
 authors = [{ name = "Anna Tchijova" }]
 dependencies = []
 
+[project.optional-dependencies]
+review = ["Pillow>=10.3,<13"]
+
 [project.scripts]
 photo-custodian = "photo_custodian.cli:main"
 

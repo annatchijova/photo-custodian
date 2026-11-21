@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-CATALOG_SCHEMA_VERSION = 2
+CATALOG_SCHEMA_VERSION = 4
 
 
 SCHEMA_V1 = """
@@ -90,6 +90,41 @@ CREATE INDEX file_hashes_digest_idx ON file_hashes(algorithm, digest)
 """
 
 
+PHOTO_SIGNATURES_TABLE_V3 = """
+CREATE TABLE photo_signatures (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    algorithm TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    signature TEXT NOT NULL
+)
+"""
+
+
+PHOTO_CATEGORIES_TABLE_V3 = """
+CREATE TABLE photo_categories (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    fingerprint TEXT NOT NULL,
+    model TEXT NOT NULL,
+    category TEXT NOT NULL
+)
+"""
+
+
+ARCHIVE_ANALYSIS_TABLE_V4 = """
+CREATE TABLE archive_analysis (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('extracted', 'advised', 'unavailable')),
+    scope TEXT NOT NULL,
+    extracted_text TEXT NOT NULL,
+    advice TEXT NOT NULL,
+    model TEXT NOT NULL,
+    PRIMARY KEY (file_id, version, fingerprint)
+)
+"""
+
+
 class Catalog:
     """Versioned SQLite catalog for read-only source inventory."""
 
@@ -139,6 +174,9 @@ class Catalog:
                 self.connection.executescript(SCHEMA_V1)
                 self.connection.execute(FILE_HASHES_TABLE_V2)
                 self.connection.execute(FILE_HASHES_INDEX_V2)
+                self.connection.execute(PHOTO_SIGNATURES_TABLE_V3)
+                self.connection.execute(PHOTO_CATEGORIES_TABLE_V3)
+                self.connection.execute(ARCHIVE_ANALYSIS_TABLE_V4)
                 self.connection.execute(
                     "INSERT INTO schema_metadata(singleton, schema_version) VALUES (1, ?)",
                     (CATALOG_SCHEMA_VERSION,),
@@ -158,6 +196,14 @@ class Catalog:
                 self._migrate_v1_to_v2()
                 stored_version = 2
                 continue
+            if stored_version == 2:
+                self._migrate_v2_to_v3()
+                stored_version = 3
+                continue
+            if stored_version == 3:
+                self._migrate_v3_to_v4()
+                stored_version = 4
+                continue
             self.connection.close()
             raise RuntimeError(
                 f"catalog schema version {stored_version} requires a migration that is "
@@ -173,6 +219,35 @@ class Catalog:
                 "UPDATE schema_metadata SET schema_version = 2 WHERE singleton = 1"
             )
             self.connection.execute("PRAGMA user_version = 2")
+        except Exception:
+            self.connection.rollback()
+            raise
+        else:
+            self.connection.commit()
+
+    def _migrate_v2_to_v3(self) -> None:
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            self.connection.execute(PHOTO_SIGNATURES_TABLE_V3)
+            self.connection.execute(PHOTO_CATEGORIES_TABLE_V3)
+            self.connection.execute(
+                "UPDATE schema_metadata SET schema_version = 3 WHERE singleton = 1"
+            )
+            self.connection.execute("PRAGMA user_version = 3")
+        except Exception:
+            self.connection.rollback()
+            raise
+        else:
+            self.connection.commit()
+
+    def _migrate_v3_to_v4(self) -> None:
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            self.connection.execute(ARCHIVE_ANALYSIS_TABLE_V4)
+            self.connection.execute(
+                "UPDATE schema_metadata SET schema_version = 4 WHERE singleton = 1"
+            )
+            self.connection.execute("PRAGMA user_version = 4")
         except Exception:
             self.connection.rollback()
             raise

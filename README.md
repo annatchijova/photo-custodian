@@ -7,14 +7,10 @@ bursts, sidecar files, and files imported repeatedly from phones and computers.
 Deleting by filename or visual resemblance alone can destroy the only valuable
 copy.
 
-Photo Custodian is a planned local-first Linux tool for inventorying those
-collections, identifying duplicate candidates, and moving reviewed files through
-a reversible quarantine workflow. Detection and deletion are intentionally
-separate operations.
-
-> Project status: M1 exact duplicate detection is implemented. The CLI performs
-> incremental inventory and complete SHA-256 verification of same-size candidates.
-> Visual similarity and all filesystem mutation commands remain unimplemented.
+Photo Custodian inventories local media, finds duplicates and possible photo
+versions, and generates an offline HTML report for reviewing groups. The report
+records choices for later verification. Reversible quarantine and file mutation
+commands are planned.
 
 ## Run inventory and exact duplicate detection
 
@@ -28,6 +24,102 @@ uv run photo-custodian duplicates exact
 The default catalog is stored under the user's XDG data directory. Override it
 with `--catalog /path/to/catalog.sqlite3` or `PHOTO_CUSTODIAN_CATALOG`. Scanning
 reads source metadata and writes only to the catalog.
+
+## Review the library in HTML
+
+```bash
+uv sync --locked --extra review
+uv run photo-custodian scan /path/to/one/library
+uv run photo-custodian report --output review-01.html
+```
+
+Open the HTML in a browser. Start with one group, compare the paths and previews,
+and select the file you would keep. Download the review notes before closing
+the page. You can restore them from the same report. Choices are group-scoped
+and require fresh verification before any cleanup.
+
+- **Exact copies** are groups from cached or newly computed SHA-256 evidence.
+  This is a catalog snapshot. Review stale and failed scan counts before proceeding.
+- **Photo versions** are candidates based on visual fingerprints, aspect ratio and
+  coarse color. Compare image details yourself. The matcher is tuned for similar
+  framing and works best on resizes and re-encodes. Crops, substantial edits,
+  unsupported formats and video variants may be missed. Videos still participate
+  in exact detection.
+- **Suggested categories** are optional. Copy up to 10 photo IDs from the report
+  and run a new report with `--categorize ID1 ID2` and `OPENAI_API_KEY` set.
+  Each selected photo can incur one API request with a JPEG preview, 320 pixels
+  on its longest side, with source metadata removed. Text visible in the photo
+  remains visible to the model. The local catalog stores the suggested labels.
+  Reports without `--categorize` are offline.
+
+The first report reads media bytes. Subsequent runs reuse exact hashes and
+versioned photo signatures where available. Use `--offset 25` with the default
+limit to see the next set of groups, and use a fresh output filename. Report
+warnings include skipped photos and incomplete analysis. An HTML report is a
+review artifact that contains local paths and embedded photo previews.
+
+## Build a searchable content archive
+
+Scan directories exported from an iPhone or PC, or directories on a mounted
+external drive. Keep the SQLite catalog on the computer that runs Photo
+Custodian. The source directory must be visible to Linux as regular files.
+Use the same mount path when reconnecting a drive. Direct iPhone protocol
+access is outside this intake path. Convert unsupported image formats during
+export if the local decoder cannot open them.
+
+```bash
+uv sync --locked --extra review
+uv run photo-custodian scan /path/to/library
+uv run photo-custodian analyze --source /path/to/library
+uv run photo-custodian archive --output archive-01.html
+```
+
+The analysis queue processes bounded batches and saves each file result. Run
+another batch to continue. Set `--kind image`, `--kind pdf` or `--kind video`
+to prioritize a type. Use `--retry-unavailable` after reconnecting a source
+or restoring a missing dependency. Image text extraction uses Tesseract with
+English and Spanish language data by default. PDF extraction uses Poppler's
+`pdftotext` for the first six pages. Video analysis uses an FFmpeg frame
+without audio. Unsupported content remains visible as pending or unavailable.
+PDFs without a text layer require separate OCR.
+
+`archive --query "search terms"` searches paths, extracted text and saved
+model suggestions locally. Add `--category "Scientific papers"` to filter
+saved categories and `--output search.html` for an offline review page.
+
+Add `--openai` to `analyze` to get proposed titles, categories, useful details,
+possible reasons for saving screenshots, and suggestions for future filing
+rules. Each item may send a resized preview, frame, and/or bounded extracted
+text to OpenAI. Text and pixels may contain private material. By default,
+extraction and searching stay local. Set `OPENAI_API_KEY` for the hosted step.
+PDF conclusions describe the sampled excerpt. A screenshot's saved reason
+is a hypothesis.
+
+Use `compare 12 13 14 --openai` with two to six photo IDs from the duplicate
+report for a JSON keep proposal. The model can propose several photos or
+abstain. Selections remain advisory.
+
+Use `workflow --source /path/to/library --output archive-next.html` to print a
+shell script for a reviewable scan, analysis batch and report. For a removable
+drive, add `--mountpoint /path/to/mount` to guard the generated run against
+an unmounted drive. Adding `--openai` includes hosted analysis in that script.
+Set `--batches` to process multiple batches in one run. Scripts are generated
+from fixed commands and user arguments.
+
+## Get one next step
+
+After scanning a folder, run `uv run photo-custodian agent` for a local
+next step. With `OPENAI_API_KEY` available in your environment, run
+`uv run photo-custodian agent --openai` to add a short suggestion in
+Rioplatense Spanish. Use `--model` or `OPENAI_MODEL` to select another
+Responses API model.
+
+The explicit OpenAI option makes one billable request containing only
+file counts and logical byte totals for images, videos, and other files.
+It sends no paths, names, or media. Advice has no access to filesystem
+tools. If the API fails, the CLI keeps the local next step visible and
+exits with a warning. Reviewing exact duplicates still hashes same-size
+candidates across the catalog. The display limit only bounds the groups shown.
 
 ## The intended experience
 
@@ -220,7 +312,7 @@ trust boundaries, language decision, failure modes, and verification plan.
 
 ## Contributing
 
-The project is in its design stage. Architecture proposals should preserve the
+Architecture proposals should preserve the
 safety contract above and include a falsifiable verification plan. Code,
 comments, tests, documentation, and commit messages are written in English;
 `README_ES.md` is the maintained Spanish-language entry point.

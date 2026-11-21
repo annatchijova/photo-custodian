@@ -77,6 +77,23 @@ class ExactDuplicateTests(unittest.TestCase):
         self.assertEqual(report.stale_files, 1)
         self.assertEqual(report.total_group_count, 0)
 
+    def test_cached_digest_is_excluded_after_file_changes(self) -> None:
+        first = self.source / "a.jpg"
+        second = self.source / "b.jpg"
+        first.write_bytes(b"one")
+        second.write_bytes(b"one")
+
+        with Catalog(self.catalog_path) as catalog:
+            scan_sources(catalog, [self.source])
+            self.assertEqual(find_exact_duplicates(catalog).total_group_count, 1)
+            second.write_bytes(b"two")
+            report = find_exact_duplicates(catalog)
+
+        self.assertEqual(report.status, "warning")
+        self.assertEqual(report.stale_files, 1)
+        self.assertEqual(report.reused_hashes, 1)
+        self.assertEqual(report.total_group_count, 0)
+
     def test_group_limit_is_bounded_at_the_api_boundary(self) -> None:
         with Catalog(self.catalog_path) as catalog:
             with self.assertRaisesRegex(ValueError, "group_limit must be between 1 and 10000"):

@@ -138,9 +138,26 @@ def _full_path_bytes(row: sqlite3.Row) -> bytes:
     return os.path.join(bytes(row["root_path_bytes"]), bytes(row["relative_path_bytes"]))
 
 
+def _revalidate_cached_file(row: sqlite3.Row) -> None:
+    current = os.stat(_full_path_bytes(row), follow_symlinks=False)
+    if not stat.S_ISREG(current.st_mode) or _stat_fingerprint(current) != _catalog_fingerprint(row):
+        raise StaleFileError("cached file no longer matches inventory")
+
+
+def _invalidate_digest(connection: sqlite3.Connection, row: sqlite3.Row) -> None:
+    connection.execute(
+        """
+        DELETE FROM file_hashes
+        WHERE file_id = ? AND algorithm = ? AND size_bytes = ?
+          AND mtime_ns = ? AND ctime_ns = ? AND device = ? AND inode = ?
+        """,
+        (row["file_id"], HASH_ALGORITHM, *_catalog_fingerprint(row)),
+    )
+
+
 def _hash_file(row: sqlite3.Row) -> bytes:
     path = _full_path_bytes(row)
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK
     descriptor = os.open(path, flags)
     with os.fdopen(descriptor, "rb", closefd=True) as handle:
         before = os.fstat(handle.fileno())
@@ -201,6 +218,7 @@ def _load_groups(
     connection: sqlite3.Connection,
     *,
     group_limit: int,
+    group_offset: int,
 ) -> tuple[int, list[ExactDuplicateGroup]]:
     predicate = _valid_hash_predicate()
     total_group_count = int(
@@ -232,9 +250,9 @@ def _load_groups(
         GROUP BY h.digest, f.size_bytes
         HAVING COUNT(*) > 1
         ORDER BY f.size_bytes DESC, h.digest
-        LIMIT ?
+        LIMIT ? OFFSET ?
         """,
-        (group_limit,),
+        (group_limit, group_offset),
     ).fetchall()
 
     groups: list[ExactDuplicateGroup] = []
@@ -293,11 +311,14 @@ def find_exact_duplicates(
     *,
     group_limit: int = 100,
     commit_every: int = 64,
+    group_offset: int = 0,
 ) -> ExactDuplicateReport:
     """Hash size-collision candidates and return review-only exact groups."""
 
     if not 1 <= group_limit <= MAX_GROUP_LIMIT:
         raise ValueError(f"group_limit must be between 1 and {MAX_GROUP_LIMIT}")
+    if group_offset < 0:
+        raise ValueError("group_offset must be non-negative")
     if commit_every < 1:
         raise ValueError("commit_every must be at least 1")
 
@@ -305,23 +326,26 @@ def find_exact_duplicates(
     writes_since_commit = 0
     for row in _iter_candidates(catalog.connection):
         report.candidate_files += 1
-        if _cached_digest(catalog.connection, row) is not None:
-            report.reused_hashes += 1
-            continue
+        cached = _cached_digest(catalog.connection, row) is not None
         try:
+            if cached:
+                _revalidate_cached_file(row)
+                report.reused_hashes += 1
+                continue
             digest = _hash_file(row)
-        except StaleFileError:
-            report.stale_files += 1
+        except (StaleFileError, OSError) as error:
+            if isinstance(error, StaleFileError):
+                report.stale_files += 1
+            else:
+                report.error_count += 1
             report.status = "warning"
-            continue
-        except OSError:
-            report.error_count += 1
-            report.status = "warning"
-            continue
-
-        _store_digest(catalog.connection, row, digest)
-        report.hashed_files += 1
-        writes_since_commit += 1
+            if cached:
+                _invalidate_digest(catalog.connection, row)
+                writes_since_commit += 1
+        else:
+            _store_digest(catalog.connection, row, digest)
+            report.hashed_files += 1
+            writes_since_commit += 1
         if writes_since_commit >= commit_every:
             catalog.flush()
             writes_since_commit = 0
@@ -330,6 +354,7 @@ def find_exact_duplicates(
     report.total_group_count, report.groups = _load_groups(
         catalog.connection,
         group_limit=group_limit,
+        group_offset=group_offset,
     )
     report.returned_group_count = len(report.groups)
     return report
