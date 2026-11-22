@@ -164,6 +164,11 @@ def build_parser() -> argparse.ArgumentParser:
     handoff_parser.add_argument("--source-id", type=int, action="append", help="limit to these catalog sources")
     handoff_parser.add_argument("--output", type=Path, required=True, help="new HTML or JSON output")
 
+    timeline_parser = subparsers.add_parser("timeline", help="export a metadata-only catalog timeline")
+    timeline_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
+    timeline_parser.add_argument("--source-id", type=int, action="append", help="limit to these catalog sources")
+    timeline_parser.add_argument("--output", type=Path, required=True, help="new HTML or JSON output")
+
     lineage_parser = subparsers.add_parser("link-derivatives", help="backfill checked MIME, transcript and WhatsApp references")
     lineage_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
     lineage_parser.add_argument("--source-id", type=int, required=True)
@@ -318,6 +323,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .case_handoff import handoff
 
             return handoff(arguments)
+        if arguments.command == "timeline":
+            from .timeline import export
+
+            return export(arguments)
         if arguments.command == "manifest":
             from .evidence_manifest import export
 

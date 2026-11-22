@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import sqlite3
 import stat
 import tempfile
@@ -234,3 +235,39 @@ class ProvenanceTests(unittest.TestCase):
         self.command("analyze", "--source", str(staged), expected=1)
         item, _ = self.handoff_item(self.file_id(fragment.name), "wrong-range.json")
         self.assertEqual(item["lineage"], {"status": "unverified"})
+
+    def test_timeline_preserves_source_clock_domains_and_omits_private_names(self):
+        first, second = self.root / "first-source", self.root / "second-source"
+        first.mkdir()
+        second.mkdir()
+        private_a, private_a2 = first / "private-alpha.txt", first / "private-alpha-2.txt"
+        private_b, private_b2 = second / "private-beta.txt", second / "private-beta-2.txt"
+        private_a.write_text("synthetic private alpha")
+        private_a2.write_text("synthetic private alpha two")
+        private_b.write_text("synthetic private beta")
+        private_b2.write_text("synthetic private beta two")
+        os.utime(private_a, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_001))
+        os.utime(private_a2, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_002))
+        os.utime(private_b, ns=(1_699_000_000_000_000_000, 1_699_000_000_000_000_002))
+        os.utime(private_b2, ns=(1_699_000_000_000_000_000, 1_699_000_000_000_000_001))
+        self.command("scan", str(first), str(second))
+        output = self.root / "timeline.json"
+        self.command("timeline", "--output", str(output))
+        payload = json.loads(output.read_text())
+        self.assertEqual(payload["header"]["timestamp_scope"], "recorded filesystem metadata; not event time")
+        self.assertEqual(payload["header"]["cross_source_ordering"], "not_established_without_anchor")
+        self.assertEqual(len(payload["tracks"]), 2)
+        for rows in payload["tracks"].values():
+            self.assertTrue(all(row["sequence_scope"] == "within_source_only" for row in rows))
+            self.assertTrue(all(row["epistemic_level"] == "recorded_metadata" for row in rows))
+            self.assertEqual([row["recorded_filesystem_mtime_ns"] for row in rows],
+                             sorted(row["recorded_filesystem_mtime_ns"] for row in rows))
+        raw = output.read_text()
+        self.assertNotIn("private-alpha", raw)
+        self.assertNotIn("synthetic private beta", raw)
+        html = self.root / "timeline.html"
+        self.command("timeline", "--output", str(html))
+        rendered = html.read_text()
+        self.assertIn("2023-11-14T22:13:20.000000001+00:00", rendered)
+        self.assertIn("2023-11-14T22:13:20.000000002+00:00", rendered)
+        self.assertEqual(stat.S_IMODE(html.stat().st_mode), 0o600)
