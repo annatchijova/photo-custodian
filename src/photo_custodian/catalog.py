@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-CATALOG_SCHEMA_VERSION = 7
+CATALOG_SCHEMA_VERSION = 8
 
 
 SCHEMA_V1 = """
@@ -164,6 +164,17 @@ CREATE INDEX parent_byte_checks_digest_idx ON parent_byte_checks(parent_sha256, 
 """
 
 
+SOURCE_TIME_PROFILES_TABLE_V8 = """
+CREATE TABLE source_time_profiles (
+    source_id INTEGER PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+    timestamp_semantics TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (timestamp_semantics IN ('unknown', 'filesystem_metadata')),
+    declared_by TEXT NOT NULL DEFAULT 'system'
+        CHECK (declared_by IN ('system', 'authorized_reviewer'))
+)
+"""
+
+
 def _protect_catalog_file(path: Path, *, create: bool = False) -> None:
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
     try:
@@ -241,6 +252,7 @@ class Catalog:
                 self.connection.execute(FILE_LINEAGE_TABLE_V6)
                 self.connection.execute(PARENT_BYTE_CHECKS_TABLE_V7)
                 self.connection.execute(PARENT_BYTE_CHECKS_INDEX_V7)
+                self.connection.execute(SOURCE_TIME_PROFILES_TABLE_V8)
                 self.connection.execute(
                     "INSERT INTO schema_metadata(singleton, schema_version) VALUES (1, ?)",
                     (CATALOG_SCHEMA_VERSION,),
@@ -279,6 +291,10 @@ class Catalog:
             if stored_version == 6:
                 self._migrate_v6_to_v7()
                 stored_version = 7
+                continue
+            if stored_version == 7:
+                self._migrate_v7_to_v8()
+                stored_version = 8
                 continue
             self.connection.close()
             raise RuntimeError(
@@ -358,6 +374,18 @@ class Catalog:
             )
             self.connection.execute("PRAGMA user_version = 7")
 
+    def _migrate_v7_to_v8(self) -> None:
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            self.connection.execute(SOURCE_TIME_PROFILES_TABLE_V8)
+            self.connection.execute(
+                "INSERT INTO source_time_profiles(source_id) SELECT id FROM sources"
+            )
+            self.connection.execute(
+                "UPDATE schema_metadata SET schema_version = 8 WHERE singleton = 1"
+            )
+            self.connection.execute("PRAGMA user_version = 8")
+
     def ensure_source(self, root: Path) -> int:
         root_bytes = os.fsencode(root)
         root_display = root_bytes.decode("utf-8", errors="backslashreplace")
@@ -384,7 +412,11 @@ class Catalog:
         ).fetchone()
         if row is None:
             raise RuntimeError(f"failed to create catalog source for {root_display}")
-        return int(row[0])
+        source_id = int(row[0])
+        self.connection.execute(
+            "INSERT OR IGNORE INTO source_time_profiles(source_id) VALUES (?)", (source_id,)
+        )
+        return source_id
 
     def begin_scan(self, source_id: int, *, commit: bool = True) -> int:
         cursor = self.connection.execute(

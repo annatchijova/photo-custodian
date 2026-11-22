@@ -51,11 +51,15 @@ class MigrationTests(unittest.TestCase):
                 pragma_version = catalog.connection.execute(
                     "PRAGMA user_version"
                 ).fetchone()[0]
+                profile = catalog.connection.execute(
+                    "SELECT timestamp_semantics, declared_by FROM source_time_profiles WHERE source_id = 1"
+                ).fetchone()
 
             self.assertEqual(file_count, 1)
             self.assertIsNotNone(hash_table)
             self.assertEqual(stored_version, CATALOG_SCHEMA_VERSION)
             self.assertEqual(pragma_version, CATALOG_SCHEMA_VERSION)
+            self.assertEqual(tuple(profile), ("unknown", "system"))
 
 
 if __name__ == "__main__":
