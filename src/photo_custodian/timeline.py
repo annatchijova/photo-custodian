@@ -78,7 +78,7 @@ def export(args) -> int:
             if connection.execute(f"SELECT COUNT(*) FROM sources WHERE id IN ({marks})", requested).fetchone()[0] != len(requested):
                 raise ValueError("At least one requested source ID is absent from the catalog.")
             clause, parameters = f" WHERE source_id IN ({marks})", requested
-        rows = connection.execute("SELECT id, source_id, mtime_ns, status FROM files" + clause +
+        rows = connection.execute("SELECT f.id, f.source_id, f.mtime_ns, f.status FROM files f" + clause.replace("source_id", "f.source_id") +
                                   " ORDER BY source_id, mtime_ns, id", parameters).fetchall()
         tracks: dict[int, list[dict]] = {}
         for row in rows:
@@ -89,6 +89,13 @@ def export(args) -> int:
             "cross_source_ordering": "not_established_without_anchor",
             "source_ids_filter": requested, "exported_utc": datetime.now(timezone.utc).isoformat(),
         }
+        profile_clause = (f" WHERE s.id IN ({','.join('?' for _ in requested)})" if requested else "")
+        profiles = connection.execute("""
+            SELECT s.id AS source_id, coalesce(p.timestamp_semantics, 'unknown') AS timestamp_semantics,
+                   coalesce(p.declared_by, 'system') AS declared_by
+            FROM sources s LEFT JOIN source_time_profiles p ON p.source_id = s.id
+        """ + profile_clause + " ORDER BY s.id", requested).fetchall()
+        header["source_time_profiles"] = [dict(row) for row in profiles]
         descriptor, temporary = tempfile.mkstemp(prefix=".timeline-", dir=output.parent)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             os.fchmod(handle.fileno(), 0o600)

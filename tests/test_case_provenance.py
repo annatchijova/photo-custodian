@@ -256,6 +256,11 @@ class ProvenanceTests(unittest.TestCase):
         payload = json.loads(output.read_text())
         self.assertEqual(payload["header"]["timestamp_scope"], "recorded filesystem metadata; not event time")
         self.assertEqual(payload["header"]["cross_source_ordering"], "not_established_without_anchor")
+        self.assertEqual(
+            [(item["timestamp_semantics"], item["declared_by"])
+             for item in payload["header"]["source_time_profiles"]],
+            [("unknown", "system"), ("unknown", "system")],
+        )
         self.assertEqual(len(payload["tracks"]), 2)
         for rows in payload["tracks"].values():
             self.assertTrue(all(row["sequence_scope"] == "within_source_only" for row in rows))
