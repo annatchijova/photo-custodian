@@ -200,6 +200,13 @@ respuesta inválida para un archivo, la cola registra el rechazo y sigue.
 `analyze --retry-triage` permite revisar esos casos de nuevo. Una falla de
 conexión o autenticación del proveedor pausa el lote.
 
+`timeline --output cronologia.html` exporta una cronología privada de metadatos
+sin abrir medios ni mostrar rutas, nombres, fragmentos o notas del modelo.
+Conserva cada fuente como un dominio de reloj separado y etiqueta las fechas
+como metadatos registrados por el sistema de archivos, no como fecha de un
+hecho. No establece orden ni causalidad entre fuentes: para eso hace falta un
+ancla independiente documentada.
+
 ### Vincular adjuntos y transcripciones con su origen
 
 En carpetas de adjuntos y transcripciones ya catalogadas, el análisis coteja

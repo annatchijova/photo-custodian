@@ -210,6 +210,13 @@ coverage. Invalid per-item model responses are recorded and the queue
 continues. Use `analyze --retry-triage` to revisit rejected outputs; provider
 connection or authentication failures still pause the batch.
 
+`timeline --output timeline.html` exports a private metadata timeline without
+opening media or showing paths, names, excerpts, or model notes. It keeps each
+catalog source as a separate clock domain and labels times as recorded
+filesystem metadata, not event time. It does not establish order or causation
+between sources; use an independently documented anchor before making that
+comparison.
+
 ### Link mail and transcript derivatives
 
 For catalogued attachment and transcript staging roots, analysis compares

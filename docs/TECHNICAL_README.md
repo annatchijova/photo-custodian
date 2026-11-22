@@ -33,6 +33,12 @@ The system does not initially promise:
 | Quality candidate | Explicit quality measurement | Human review is warranted |
 | Unknown | Missing decoder, metadata error, or incomplete scan | No destructive action |
 
+The `timeline` export is metadata-only. It treats every catalog source as a
+separate clock domain and exports filesystem modification time solely as
+recorded metadata. It establishes neither event time, cross-source ordering,
+nor causation. Its private output excludes paths, names, extracted text and
+model notes; malformed catalog rows are rejected rather than serialized.
+
 An exact-byte conclusion does not establish that a path is disposable. A copy
 may intentionally provide redundancy or belong to a separate archival policy.
 

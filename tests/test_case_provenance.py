@@ -271,3 +271,10 @@ class ProvenanceTests(unittest.TestCase):
         self.assertIn("2023-11-14T22:13:20.000000001+00:00", rendered)
         self.assertIn("2023-11-14T22:13:20.000000002+00:00", rendered)
         self.assertEqual(stat.S_IMODE(html.stat().st_mode), 0o600)
+
+        source_id = next(iter(payload["tracks"]))
+        focused = self.root / "timeline-focused.json"
+        self.command("timeline", "--source-id", source_id, "--output", str(focused))
+        filtered = json.loads(focused.read_text())
+        self.assertEqual(filtered["header"]["source_ids_filter"], [int(source_id)])
+        self.assertEqual(list(filtered["tracks"]), [source_id])
