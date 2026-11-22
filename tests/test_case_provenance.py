@@ -261,6 +261,18 @@ class ProvenanceTests(unittest.TestCase):
              for item in payload["header"]["source_time_profiles"]],
             [("unknown", "system"), ("unknown", "system")],
         )
+        source_id = int(next(iter(payload["tracks"])))
+        self.command("source-time-profile", "--source-id", str(source_id),
+                     "--semantics", "filesystem_metadata")
+        revised = self.root / "timeline-revised.json"
+        self.command("timeline", "--output", str(revised))
+        profiles = {item["source_id"]: item for item in json.loads(revised.read_text())["header"]["source_time_profiles"]}
+        self.assertEqual(profiles[source_id], {
+            "source_id": source_id, "timestamp_semantics": "filesystem_metadata",
+            "declared_by": "authorized_reviewer",
+        })
+        self.command("source-time-profile", "--source-id", "999999", "--semantics", "unknown", expected=2)
+        self.assertEqual(profiles[source_id]["timestamp_semantics"], "filesystem_metadata")
         self.assertEqual(len(payload["tracks"]), 2)
         for rows in payload["tracks"].values():
             self.assertTrue(all(row["sequence_scope"] == "within_source_only" for row in rows))

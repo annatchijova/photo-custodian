@@ -169,6 +169,11 @@ def build_parser() -> argparse.ArgumentParser:
     timeline_parser.add_argument("--source-id", type=int, action="append", help="limit to these catalog sources")
     timeline_parser.add_argument("--output", type=Path, required=True, help="new HTML or JSON output")
 
+    time_profile_parser = subparsers.add_parser("source-time-profile", help="declare conservative timestamp semantics for one source")
+    time_profile_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
+    time_profile_parser.add_argument("--source-id", type=int, required=True)
+    time_profile_parser.add_argument("--semantics", choices=("unknown", "filesystem_metadata"), required=True)
+
     lineage_parser = subparsers.add_parser("link-derivatives", help="backfill checked MIME, transcript and WhatsApp references")
     lineage_parser.add_argument("--catalog", type=Path, default=default_catalog_path())
     lineage_parser.add_argument("--source-id", type=int, required=True)
@@ -327,6 +332,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .timeline import export
 
             return export(arguments)
+        if arguments.command == "source-time-profile":
+            from .source_time_profiles import set_profile
+
+            with Catalog(arguments.catalog) as catalog:
+                return set_profile(catalog, arguments)
         if arguments.command == "manifest":
             from .evidence_manifest import export
 
