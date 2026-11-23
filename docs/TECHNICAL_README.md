@@ -3,9 +3,11 @@
 # Photo Custodian: Technical Design
 
 This document records the architecture and engineering constraints for Photo
-Custodian. M0 read-only inventory and M1 exact duplicate detection are
-implemented; quarantine, similarity analysis, and model integration remain design
-proposals.
+Custodian. M0 read-only inventory, M1 exact duplicate detection, visual-variant
+candidates, content archiving and local search, advisory model integration, and
+metadata-only case export (review leads, timeline, byte manifests) are
+implemented and covered by tests. Quarantine, restore, and permanent deletion
+remain design proposals; no code path can mutate a source file.
 
 ## System boundary
 
@@ -231,9 +233,13 @@ The implementation must provide evidence for the property it claims:
 M0 has behavioral tests for schema stamping, boundary rejection, symlink
 skipping, incremental fingerprints, missing-file state, inventory aggregation,
 and CLI error handling. M1 adds migration, complete SHA-256, hardlink, stale-file,
-cache, traversal-order, bounded-output, and CLI tests. No representative
-one-terabyte benchmark or evidence for later milestones exists yet; claims about
-those capabilities remain design-only.
+cache, traversal-order, bounded-output, and CLI tests. Visual-variant review,
+archive/search, advisor-provider isolation, and case-handoff/timeline/manifest
+export each have dedicated test modules (`test_review_report.py`,
+`test_catalog.py`, `test_advisor.py`, `test_case_provenance.py`,
+`test_registered_source.py`, `test_exact_*`). No representative one-terabyte
+benchmark exists yet, and quarantine/restore have no implementation or evidence;
+claims about those two capabilities remain design-only.
 
 ## Dependency and operational constraints
 
@@ -256,7 +262,8 @@ those capabilities remain design-only.
 - Thumbnail privacy and cache lifetime.
 - Whether Czkawka is invoked as an external engine, integrated through Rust, or
   used only as a comparative baseline.
-- CLI/TUI framework and the minimum review interface for the first usable release.
+- Whether a persistent review queue or TUI is justified beyond the current
+  stdlib argparse CLI and offline HTML reports.
 
 ## License and redistribution
 

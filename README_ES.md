@@ -12,6 +12,13 @@ posibles versiones de fotos, y genera reportes HTML para revisar la colección
 por tandas. También crea un archivo consultable de capturas, papers y otros
 contenidos compatibles. La cuarentena reversible forma parte del plan.
 
+También puede exportar, para un tercero autorizado (por ejemplo la abogada de
+un caso), referencias de revisión, una línea de tiempo de metadatos y
+manifiestos de bytes, sin que la persona usuaria tenga que volver a abrir ni
+exponerse al material original. Estas exportaciones omiten nombres de
+archivo, extractos y contenido multimedia por defecto; ver
+[Preparar una entrega sin abrir el material](#preparar-una-entrega-sin-abrir-el-material).
+
 El flujo de análisis de contenido está implementado. Su funcionamiento integral, el análisis remoto y el rendimiento con la colección de 3 TB siguen sin verificar.
 
 ## Ejecutar inventario y duplicados exactos

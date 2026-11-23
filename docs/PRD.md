@@ -28,6 +28,9 @@ outside the first release.
 5. Inventory videos and later compare representative frames.
 6. Propose organization plans without applying them during analysis.
 7. Review decisions and apply them through reversible quarantine manifests.
+8. Export metadata-only review leads, timelines, and byte manifests for an
+   authorized third party (e.g. counsel) without requiring the user to reopen
+   the underlying media.
 
 ## Milestone M0 acceptance criteria
 
@@ -68,6 +71,15 @@ M0 inventory and M1 exact duplicate detection are implemented. M1 uses complete
 SHA-256 over size-collision candidates and has traversal-order, hardlink, cache,
 stale-file, and schema-migration tests.
 
-Quarantine cannot ship until restore is exercised on same-filesystem and
-cross-filesystem fixtures. Similarity cannot ship with a default threshold until
-evaluated against a labeled local corpus.
+Visual-variant candidates, content archiving (OCR, PDF, audio/video transcription),
+local search (`ask`, `archive`), advisory model categorization, and metadata-only
+case export (`case-handoff`, `timeline`, `manifest`/`verify-manifest`,
+`link-derivatives`, `fracture-plan`) are also implemented and covered by tests.
+These remain advisory and non-destructive: none of them can authorize a
+filesystem mutation.
+
+Quarantine and permanent deletion are not implemented. Quarantine cannot ship
+until restore is exercised on same-filesystem and cross-filesystem fixtures.
+Similarity cannot ship with a default threshold until evaluated against a
+labeled local corpus; the current matcher is a review aid, not a tuned
+classifier.

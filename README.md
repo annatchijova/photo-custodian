@@ -12,6 +12,14 @@ versions, and generates an offline HTML report for reviewing groups. The report
 records choices for later verification. Reversible quarantine and file mutation
 commands are planned.
 
+It also builds a searchable, offline archive of extracted content (OCR, PDF
+text, audio/video transcripts) and can export metadata-only review leads, a
+source-time timeline, and byte manifests for an authorized third party, such
+as counsel in a legal matter, without the user having to reopen or re-expose
+themselves to the underlying material. These exports omit filenames, excerpts
+and media by default; see
+[Export review leads without opening source material](#export-review-leads-without-opening-source-material).
+
 The archive analysis workflow is implemented. End-to-end operation, hosted analysis and throughput on the 3 TB collection remain unverified.
 
 ## Run inventory and exact duplicate detection
