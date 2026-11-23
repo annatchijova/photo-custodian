@@ -190,6 +190,14 @@ Ollama or another local model may explain visible differences or summarize fixed
 group evidence. Swapping or disabling the model must not change exact duplicate
 groups, keeper decisions, action manifests, or audit results.
 
+The archive analysis queue applies this ordering structurally: before any
+extraction or model call, it hashes the candidate with the same complete
+SHA-256 used for exact duplicates and, on a match against an already
+extracted or advised file, copies that result instead of re-running
+extraction or the model. The deterministic check runs first and is the only
+gate on whether the complex, optional step runs at all; a byte-identical
+item is read, decoded, transcribed, and sent to a provider at most once.
+
 ## Catalog and schema evolution
 
 The catalog schema must be versioned and migrated forward explicitly. Derived

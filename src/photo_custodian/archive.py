@@ -16,6 +16,7 @@ from .advisor import AdviceRejected, AdviceUnavailable
 from .archive_evidence import EvidenceUnavailable, extract
 from .catalog import Catalog
 from .derivative_lineage import link_row
+from .exact_duplicates import HASH_ALGORITHM, StaleFileError, _cached_digest, _hash_file, _store_digest
 from .inference import select_inference
 from .intake import _write
 from .registered_sources import require_attached_source
@@ -63,6 +64,46 @@ def _save(catalog: Catalog, row: sqlite3.Row, *, status: str, scope: str,
     catalog.flush()
 
 
+def _content_digest(catalog: Catalog, row: sqlite3.Row) -> bytes | None:
+    """Return this file's current SHA-256, reusing or storing the catalog cache.
+
+    Returns None on any read failure; the caller falls back to the normal
+    extraction path, which reports the same failure with proper context.
+    """
+    try:
+        digest = _cached_digest(catalog.connection, row)
+        if digest is None:
+            digest = _hash_file(row)
+            _store_digest(catalog.connection, row, digest)
+            catalog.flush()
+        return digest
+    except (StaleFileError, OSError):
+        return None
+
+
+def _reusable_analysis(catalog: Catalog, digest: bytes, exclude_file_id: int) -> sqlite3.Row | None:
+    """Find a completed analysis of a byte-identical file to copy instead of re-running it.
+
+    Only 'extracted' and 'advised' results are reusable: both already exist and
+    cost nothing to copy. 'unavailable' is excluded because nothing was produced
+    to reuse, and because its cause (e.g. a missing decoder for this run) is not
+    guaranteed to generalize. Advised results are preferred over bare extraction.
+    """
+    return catalog.connection.execute("""
+        SELECT a.file_id AS source_file_id, a.status, a.scope, a.extracted_text, a.advice, a.model
+        FROM file_hashes h
+        JOIN files f ON f.id = h.file_id AND f.status = 'active'
+            AND h.size_bytes = f.size_bytes AND h.mtime_ns = f.mtime_ns
+            AND h.ctime_ns = f.ctime_ns AND h.device = f.device AND h.inode = f.inode
+        JOIN archive_analysis a ON a.file_id = f.id AND a.version = ?
+            AND a.fingerprint = json_array(f.size_bytes, f.mtime_ns, f.ctime_ns, f.device, f.inode)
+        WHERE h.algorithm = ? AND h.digest = ? AND h.file_id != ?
+          AND a.status IN ('extracted', 'advised')
+        ORDER BY (a.status = 'advised') DESC, a.file_id
+        LIMIT 1
+    """, (ANALYSIS_VERSION, HASH_ALGORITHM, digest, exclude_file_id)).fetchone()
+
+
 def analyze_batch(catalog: Catalog, args: Namespace) -> int:
     if not 1 <= args.limit <= 100:
         raise ValueError("Use a batch limit from 1 to 100.")
@@ -102,11 +143,26 @@ def analyze_batch(catalog: Catalog, args: Namespace) -> int:
     if not rows:
         print("No pending items in this source and file type.")
         return 3
-    complete = unavailable = rejected = incomplete = unverified_links = 0
+    complete = unavailable = rejected = incomplete = unverified_links = reused = 0
     lineage_cache: dict = {}
     for row in rows:
         if link_row(catalog.connection, row, lineage_cache) == "unverified":
             unverified_links += 1
+        digest = _content_digest(catalog, row)
+        reusable = _reusable_analysis(catalog, digest, row["file_id"]) if digest is not None else None
+        if reusable is not None:
+            advice = json.loads(reusable["advice"] or "{}")
+            if not isinstance(advice, dict):
+                advice = {}
+            advice["_reused_from_exact_duplicate_of_file_id"] = reusable["source_file_id"]
+            _save(catalog, row, status=reusable["status"], scope=reusable["scope"],
+                  extracted=reusable["extracted_text"], advice=advice, model=reusable["model"])
+            reused += 1
+            if advice.get("_triage_state") == "rejected":
+                rejected += 1
+            else:
+                complete += 1
+            continue
         try:
             evidence = extract(row, ocr_language=args.ocr_language, whisper_model=args.whisper_model)
         except (EvidenceUnavailable, OSError, ImportError) as error:
@@ -148,7 +204,8 @@ def analyze_batch(catalog: Catalog, args: Namespace) -> int:
                   }},
                   model=f"{inference.provider}:{inference.model}")
         complete += 1
-    print(f"Batch complete: {complete} processed, {unavailable} unavailable, "
+    print(f"Batch complete: {complete} processed ({reused} reused from an exact byte-identical "
+          f"duplicate without re-reading or re-sending content), {unavailable} unavailable, "
           f"{incomplete} with unavailable text extraction, {rejected} rejected by the model, "
           f"{unverified_links} with unverified derivative lineage.")
     return int(bool(unavailable or rejected or incomplete or unverified_links))

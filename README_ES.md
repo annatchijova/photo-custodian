@@ -77,7 +77,16 @@ uv run photo-custodian archive --output archivo-01.html
 El análisis avanza por tandas y guarda el resultado de cada archivo. Priorizá
 un tipo con `--kind image`, `--kind pdf` o `--kind video`. Usá
 `--retry-unavailable` al reconectar una fuente o recuperar una dependencia.
-Las imágenes usan Tesseract con datos de español e inglés. Para PDF, Poppler
+
+Antes de extraer o enviar contenido a un modelo, cada ítem se hashea con el
+mismo SHA-256 completo que usan los duplicados exactos. Si ya existe una copia
+con bytes idénticos ya extraída o ya evaluada por el modelo, su resultado se
+copia localmente y se saltea tanto la extracción como cualquier llamada al
+modelo para ese ítem; la copia registra de qué ID de catálogo se reutilizó.
+Es una verificación determinística y local — nunca adivina por tamaño o
+nombre — así que solo aplica a bytes probadamente idénticos, y significa que
+una foto o grabación duplicada nunca se vuelve a leer, transcribir ni enviar
+a un proveedor una vez que una copia ya fue procesada. Las imágenes usan Tesseract con datos de español e inglés. Para PDF, Poppler
 extrae texto de las primeras seis páginas. Los PDF escaneados requieren OCR
 aparte. FFmpeg toma un fotograma de los videos compatibles.
 

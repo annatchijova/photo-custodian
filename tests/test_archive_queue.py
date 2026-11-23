@@ -84,6 +84,43 @@ class ArchiveQueueTests(unittest.TestCase):
             else:
                 self.assertIn("Defensa", text)
 
+    def test_exact_duplicate_reuses_advice_without_a_second_model_call(self):
+        (self.source / "a.txt").write_bytes(b"identical content shared by two copies")
+        (self.source / "b.txt").write_bytes(b"identical content shared by two copies")
+        self.command("scan", str(self.source))
+        calls = []
+
+        def fake_model(content, instructions):
+            calls.append(json.loads(content[0]["text"])["extracted_text"])
+            return {
+                "category": "Other", "title": "", "summary": "", "saved_reason_hypothesis": "",
+                "important_information": "", "suggested_rule": "", "vision_transcription": "",
+                "defense_lead": "PRIVATE_MODEL_FIXTURE", "complaint_lead": "",
+            }
+
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "synthetic-key"}),
+            patch("photo_custodian.inference.Inference.structured", side_effect=fake_model),
+        ):
+            self.command("analyze", "--source", str(self.source), "--openai")
+        self.assertEqual(len(calls), 1, "the second byte-identical file must not reach the model")
+        with closing(sqlite3.connect(self.catalog)) as connection:
+            rows = connection.execute("""
+                SELECT file_id, status, extracted_text, advice FROM archive_analysis ORDER BY file_id
+            """).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row[1] for row in rows}, {"advised"})
+        first_advice = json.loads(rows[0][3])
+        second_advice = json.loads(rows[1][3])
+        self.assertNotIn("_reused_from_exact_duplicate_of_file_id", first_advice)
+        self.assertEqual(second_advice["_reused_from_exact_duplicate_of_file_id"], rows[0][0])
+        self.assertEqual(second_advice["defense_lead"], first_advice["defense_lead"])
+        output = self.root / "handoff.json"
+        self.command("case-handoff", "--output", str(output))
+        items = json.loads(output.read_text())["items"]
+        self.assertEqual(len(items), 2)
+        self.assertTrue(all(item["proposed_lanes"] == ["defense"] for item in items))
+
     def test_provider_failure_pauses_after_saving_only_the_current_extraction(self):
         args = self.prepare_sources()
         with (
