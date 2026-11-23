@@ -121,6 +121,73 @@ class ArchiveQueueTests(unittest.TestCase):
         self.assertEqual(len(items), 2)
         self.assertTrue(all(item["proposed_lanes"] == ["defense"] for item in items))
 
+    def test_identical_bytes_with_different_extensions_do_not_cross_extraction_methods(self):
+        content = b"Subject: Hi\n\nBody text here\n"
+        (self.source / "a.txt").write_bytes(content)
+        (self.source / "b.eml").write_bytes(content)
+        (self.source / "c.txt").write_bytes(content)
+        self.command("scan", str(self.source))
+        self.command("analyze", "--source", str(self.source), "--kind", "text")
+        with closing(sqlite3.connect(self.catalog)) as connection:
+            rows = connection.execute("""
+                SELECT f.extension, a.status, a.extracted_text, a.advice
+                FROM archive_analysis a JOIN files f ON f.id = a.file_id ORDER BY f.id
+            """).fetchall()
+        self.assertEqual(len(rows), 3)
+        eml_rows = [row for row in rows if row[0] == ".eml"]
+        txt_rows = [row for row in rows if row[0] == ".txt"]
+        self.assertEqual(len(eml_rows), 1)
+        self.assertEqual(len(txt_rows), 2)
+        self.assertEqual(eml_rows[0][1], "extracted")
+        self.assertNotIn("_reused_from_exact_duplicate_of_file_id", json.loads(eml_rows[0][3]))
+        # The .eml parser adds a header/body wrapper; a plain .txt read never does.
+        self.assertNotEqual(eml_rows[0][2], txt_rows[0][2])
+        reused_flags = ["_reused_from_exact_duplicate_of_file_id" in json.loads(row[3]) for row in txt_rows]
+        self.assertEqual(sum(reused_flags), 1, "exactly one of the two identical .txt files should reuse the other")
+        self.assertEqual(txt_rows[0][2], txt_rows[1][2])
+
+    def test_retry_triage_still_calls_the_model_for_a_rejected_exact_duplicate(self):
+        (self.source / "a.txt").write_bytes(b"shared evidence text")
+        (self.source / "b.txt").write_bytes(b"shared evidence text")
+        self.command("scan", str(self.source))
+        calls = []
+
+        def always_rejects(content, instructions):
+            calls.append(json.loads(content[0]["text"])["extracted_text"])
+            return {"category": "Invalid category"}
+
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "synthetic-key"}),
+            patch("photo_custodian.inference.Inference.structured", side_effect=always_rejects),
+        ):
+            self.command("analyze", "--source", str(self.source), "--openai", expected=1)
+        # A rejected result must never be copied to a duplicate: each file needs
+        # its own chance at --retry-triage, so both calls must have happened.
+        self.assertEqual(len(calls), 2)
+        calls.clear()
+
+        def now_succeeds(content, instructions):
+            calls.append(json.loads(content[0]["text"])["extracted_text"])
+            return {
+                "category": "Other", "title": "", "summary": "", "saved_reason_hypothesis": "",
+                "important_information": "", "suggested_rule": "", "vision_transcription": "",
+                "defense_lead": "FIXED_ON_RETRY", "complaint_lead": "",
+            }
+
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "synthetic-key"}),
+            patch("photo_custodian.inference.Inference.structured", side_effect=now_succeeds),
+        ):
+            self.command("analyze", "--source", str(self.source), "--openai", "--retry-triage")
+        # The retry must reach the model at least once; the duplicate may then
+        # reuse the new, successful result instead of calling the model twice.
+        self.assertEqual(len(calls), 1)
+        with closing(sqlite3.connect(self.catalog)) as connection:
+            rows = connection.execute("SELECT status, advice FROM archive_analysis ORDER BY file_id").fetchall()
+        self.assertEqual({row[0] for row in rows}, {"advised"})
+        for _, advice in rows:
+            self.assertEqual(json.loads(advice)["defense_lead"], "FIXED_ON_RETRY")
+
     def test_provider_failure_pauses_after_saving_only_the_current_extraction(self):
         args = self.prepare_sources()
         with (

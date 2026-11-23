@@ -190,13 +190,23 @@ Ollama or another local model may explain visible differences or summarize fixed
 group evidence. Swapping or disabling the model must not change exact duplicate
 groups, keeper decisions, action manifests, or audit results.
 
-The archive analysis queue applies this ordering structurally: before any
-extraction or model call, it hashes the candidate with the same complete
-SHA-256 used for exact duplicates and, on a match against an already
-extracted or advised file, copies that result instead of re-running
-extraction or the model. The deterministic check runs first and is the only
-gate on whether the complex, optional step runs at all; a byte-identical
-item is read, decoded, transcribed, and sent to a provider at most once.
+The archive analysis queue applies this ordering structurally for `.pdf`,
+`.txt`, and `.eml`: before any extraction or model call, it hashes the
+candidate with the same complete SHA-256 used for exact duplicates and, on a
+match against an already extracted or advised file with the same extension,
+copies that result instead of re-running extraction or the model. The
+deterministic check runs first and is the only gate on whether the complex,
+optional step runs at all; a byte-identical document is read and sent to a
+provider at most once. The reuse is scoped to extensions whose extraction is
+a pure function of bytes alone and excludes images and audio/video, because
+OCR language and the Whisper model path are run-time parameters that are not
+recorded per analysis row; reusing across those would risk silently applying
+whichever language or model happened to run first for a given byte pattern.
+A red-team pass confirmed the risk by constructing identical bytes stored as
+both a real PDF and a misnamed `.txt` copy: without the extension match, the
+PDF's analysis reused the `.txt` path's raw-byte read instead of running
+`pdftotext`, silently replacing its real extracted text with noise. The fix
+is the extension equality check in `_reusable_analysis`.
 
 ## Catalog and schema evolution
 

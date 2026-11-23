@@ -89,15 +89,17 @@ another batch to continue. Set `--kind image`, `--kind pdf` or `--kind video`
 to prioritize a type. Use `--retry-unavailable` after reconnecting a source
 or restoring a missing dependency.
 
-Before extracting or sending content to a model, each item is hashed with the
-same complete SHA-256 used for exact duplicates. If a byte-identical copy was
-already extracted or advised, its result is copied locally and the extraction
-step and any model call are skipped entirely for that item; the copy's advice
-records which catalog file ID it was reused from. This is a deterministic,
-local check — it never guesses from size or name — so it only applies to
-provably identical bytes, and it means a duplicated photo or recording is
-never re-read, re-transcribed, or re-sent to a provider once one copy has
-been processed. Image text extraction uses Tesseract with
+Before extracting or sending content to a model, a `.pdf`, `.txt` or `.eml`
+item is hashed with the same complete SHA-256 used for exact duplicates. If a
+byte-identical copy with the same extension was already extracted or advised,
+its result is copied locally and the extraction step and any model call are
+skipped entirely for that item; the copy's advice records which catalog file
+ID it was reused from. This reuse is restricted to those three extensions
+because their extraction takes no run-time parameter, so identical bytes
+always produce the identical result; images and audio/video are excluded
+because OCR language and the Whisper model path can change the outcome and
+are not recorded per analysis, so each copy is still extracted independently.
+Image text extraction uses Tesseract with
 English and Spanish language data by default. PDF extraction uses Poppler's
 `pdftotext` for the first six pages. Video analysis uses an FFmpeg frame
 without audio. Unsupported content remains visible as pending or unavailable.

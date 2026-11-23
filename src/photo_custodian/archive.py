@@ -81,27 +81,49 @@ def _content_digest(catalog: Catalog, row: sqlite3.Row) -> bytes | None:
         return None
 
 
-def _reusable_analysis(catalog: Catalog, digest: bytes, exclude_file_id: int) -> sqlite3.Row | None:
+_REUSABLE_EXTENSIONS = (".pdf", ".txt", ".eml")
+"""Extensions whose extraction is a pure function of bytes alone.
+
+Image OCR depends on --ocr-language and audio/video transcription depends on
+--whisper-model, neither of which is recorded per analysis row; reusing their
+output across files would silently apply whichever language or model happened
+to run first. These three extractors take no run-time parameter, so identical
+bytes always produce the identical result regardless of when or how they were
+last analyzed.
+"""
+
+
+def _reusable_analysis(catalog: Catalog, digest: bytes, exclude_file_id: int, extension: str) -> sqlite3.Row | None:
     """Find a completed analysis of a byte-identical file to copy instead of re-running it.
 
-    Only 'extracted' and 'advised' results are reusable: both already exist and
-    cost nothing to copy. 'unavailable' is excluded because nothing was produced
-    to reuse, and because its cause (e.g. a missing decoder for this run) is not
-    guaranteed to generalize. Advised results are preferred over bare extraction.
+    Only 'extracted' and 'advised' results are reusable, and only when the model
+    did not reject them: a rejection produced no usable output, so copying one
+    would silently defeat an explicit `--retry-triage` request for a duplicate
+    of a rejected file — confirmed by induction (two identical files circularly
+    reused each other's rejection and the retried batch made zero model calls).
+    'unavailable' is excluded because nothing was produced to reuse, and because
+    its cause (e.g. a missing decoder for this run) is not guaranteed to
+    generalize. Advised results are preferred over bare extraction.
+    Restricted to _REUSABLE_EXTENSIONS and to an exact extension match: the same
+    bytes under a different extension (e.g. a PDF saved alongside a copy misnamed
+    ".txt") must not borrow the other extension's extraction method.
     """
+    if extension not in _REUSABLE_EXTENSIONS:
+        return None
     return catalog.connection.execute("""
         SELECT a.file_id AS source_file_id, a.status, a.scope, a.extracted_text, a.advice, a.model
         FROM file_hashes h
-        JOIN files f ON f.id = h.file_id AND f.status = 'active'
+        JOIN files f ON f.id = h.file_id AND f.status = 'active' AND f.extension = ?
             AND h.size_bytes = f.size_bytes AND h.mtime_ns = f.mtime_ns
             AND h.ctime_ns = f.ctime_ns AND h.device = f.device AND h.inode = f.inode
         JOIN archive_analysis a ON a.file_id = f.id AND a.version = ?
             AND a.fingerprint = json_array(f.size_bytes, f.mtime_ns, f.ctime_ns, f.device, f.inode)
         WHERE h.algorithm = ? AND h.digest = ? AND h.file_id != ?
           AND a.status IN ('extracted', 'advised')
+          AND CASE WHEN json_valid(a.advice) THEN json_extract(a.advice, '$._triage_state') END IS NOT 'rejected'
         ORDER BY (a.status = 'advised') DESC, a.file_id
         LIMIT 1
-    """, (ANALYSIS_VERSION, HASH_ALGORITHM, digest, exclude_file_id)).fetchone()
+    """, (extension, ANALYSIS_VERSION, HASH_ALGORITHM, digest, exclude_file_id)).fetchone()
 
 
 def analyze_batch(catalog: Catalog, args: Namespace) -> int:
@@ -148,8 +170,9 @@ def analyze_batch(catalog: Catalog, args: Namespace) -> int:
     for row in rows:
         if link_row(catalog.connection, row, lineage_cache) == "unverified":
             unverified_links += 1
-        digest = _content_digest(catalog, row)
-        reusable = _reusable_analysis(catalog, digest, row["file_id"]) if digest is not None else None
+        digest = _content_digest(catalog, row) if row["extension"] in _REUSABLE_EXTENSIONS else None
+        reusable = (_reusable_analysis(catalog, digest, row["file_id"], row["extension"])
+                    if digest is not None else None)
         if reusable is not None:
             advice = json.loads(reusable["advice"] or "{}")
             if not isinstance(advice, dict):
@@ -158,10 +181,7 @@ def analyze_batch(catalog: Catalog, args: Namespace) -> int:
             _save(catalog, row, status=reusable["status"], scope=reusable["scope"],
                   extracted=reusable["extracted_text"], advice=advice, model=reusable["model"])
             reused += 1
-            if advice.get("_triage_state") == "rejected":
-                rejected += 1
-            else:
-                complete += 1
+            complete += 1
             continue
         try:
             evidence = extract(row, ocr_language=args.ocr_language, whisper_model=args.whisper_model)
